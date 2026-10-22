@@ -20,4 +20,9 @@ demo/       Fake instrumented services + load generator
 cd backend
 uv sync
 uv run pytest
+uv run uvicorn heimdall.api.main:app --port 4318
 ```
+
+Point any OTel SDK at it with `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, then check `http://localhost:4318/api/spans`.
+
+Settings (environment variables): `HEIMDALL_DB_PATH` (default `heimdall.duckdb`), `HEIMDALL_MAX_PENDING` (100000), `HEIMDALL_BATCH_SIZE` (500), `HEIMDALL_FLUSH_INTERVAL` (1.0 s).
