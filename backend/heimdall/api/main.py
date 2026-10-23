@@ -10,17 +10,19 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 
 import duckdb
-from fastapi import Depends, FastAPI, Query, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 
 from heimdall.ingest.decoder import InvalidPayload, decode_traces
 from heimdall.ingest.pipeline import BatchWriter, QueueFull
 from heimdall.queries.spans import recent_spans
+from heimdall.queries.traces import get_trace, list_services, list_traces
 from heimdall.store.schema import connect
 
 PROTOBUF = "application/x-protobuf"
 EMPTY_TRACE_RESPONSE = ExportTraceServiceResponse().SerializeToString()
 MAX_SPANS_LIMIT = 1000
+MAX_TRACES_LIMIT = 500
 
 
 @asynccontextmanager
@@ -74,6 +76,44 @@ async def ingest_traces(request: Request) -> Response:
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/api/services")
+def services(
+    from_ms: float | None = None,
+    to_ms: float | None = None,
+    cur: duckdb.DuckDBPyConnection = Depends(get_cursor),
+) -> dict:
+    return {"services": list_services(cur, from_ms=from_ms, to_ms=to_ms)}
+
+
+@app.get("/api/traces")
+def traces(
+    service: str | None = None,
+    errors_only: bool = False,
+    min_duration_ms: float | None = Query(None, ge=0),
+    from_ms: float | None = None,
+    to_ms: float | None = None,
+    limit: int = Query(50, ge=1),
+    cur: duckdb.DuckDBPyConnection = Depends(get_cursor),
+) -> dict:
+    return {"traces": list_traces(
+        cur,
+        service=service,
+        errors_only=errors_only,
+        min_duration_ms=min_duration_ms,
+        from_ms=from_ms,
+        to_ms=to_ms,
+        limit=min(limit, MAX_TRACES_LIMIT),
+    )}
+
+
+@app.get("/api/traces/{trace_id}")
+def trace(trace_id: str, cur: duckdb.DuckDBPyConnection = Depends(get_cursor)) -> dict:
+    result = get_trace(cur, trace_id.lower())
+    if result is None:
+        raise HTTPException(status_code=404, detail="trace not found")
+    return result
 
 
 @app.get("/api/spans")
