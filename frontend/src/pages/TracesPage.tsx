@@ -1,16 +1,11 @@
 import { useEffect, useState } from 'react'
+import { Link, useNavigate } from 'react-router'
 import { fetchServices, fetchTraces } from '../api/client'
 import type { TraceFilters, TraceSummary } from '../api/types'
-
-function formatDuration(ms: number): string {
-  return ms < 1000 ? `${ms.toFixed(1)} ms` : `${(ms / 1000).toFixed(2)} s`
-}
-
-function formatTime(ms: number): string {
-  return new Date(ms).toLocaleTimeString()
-}
+import { formatDuration, formatTime } from '../lib/format'
 
 export default function TracesPage() {
+  const navigate = useNavigate()
   const [filters, setFilters] = useState<TraceFilters>({
     service: null,
     errorsOnly: false,
@@ -119,10 +114,12 @@ export default function TracesPage() {
             </thead>
             <tbody>
               {traces.map((t) => (
-                <tr key={t.trace_id}>
+                <tr key={t.trace_id} onClick={() => navigate(`/traces/${t.trace_id}`)}>
                   <td>{formatTime(t.start_ms)}</td>
                   <td>{t.root_service}</td>
-                  <td className="mono">{t.root_name}</td>
+                  <td className="mono">
+                    <Link to={`/traces/${t.trace_id}`}>{t.root_name}</Link>
+                  </td>
                   <td className="num">{formatDuration(t.duration_ms)}</td>
                   <td className="num">{t.span_count}</td>
                   <td>
