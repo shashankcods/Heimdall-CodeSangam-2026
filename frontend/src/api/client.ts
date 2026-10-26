@@ -1,4 +1,4 @@
-import type { TraceFilters, TraceSummary } from './types'
+import type { TraceDetail, TraceFilters, TraceSummary } from './types'
 
 // GET a relative /api path and return the parsed JSON, or throw on a non-2xx status.
 async function getJson<T>(path: string): Promise<T> {
@@ -17,6 +17,10 @@ export async function fetchTraces(filters: TraceFilters): Promise<TraceSummary[]
 
   const data = await getJson<{ traces: TraceSummary[] }>(`/api/traces?${params}`)
   return data.traces
+}
+
+export async function fetchTrace(traceId: string): Promise<TraceDetail> {
+  return getJson<TraceDetail>(`/api/traces/${encodeURIComponent(traceId)}`)
 }
 
 export async function fetchServices(): Promise<string[]> {
