@@ -1,26 +1,20 @@
-import { useEffect, useState } from 'react'
+import { Navigate, Route, Routes } from 'react-router'
+import Layout from './components/Layout'
+import TracesPage from './pages/TracesPage'
+import LogsPage from './pages/LogsPage'
+import ServiceMapPage from './pages/ServiceMapPage'
 
-type Health = 'checking' | 'ok' | 'down'
-
-// Placeholder page. Calls GET /api/health through the Vite proxy to prove
-// the frontend can reach the backend. Replaced by the app shell in the next task.
+// URL -> page. Every page renders inside Layout (the sidebar), at its <Outlet />.
 export default function App() {
-  const [health, setHealth] = useState<Health>('checking')
-
-  useEffect(() => {
-    fetch('/api/health')
-      .then((res) => res.json())
-      .then((data: { status: string }) => setHealth(data.status === 'ok' ? 'ok' : 'down'))
-      .catch(() => setHealth('down'))
-  }, [])
-
   return (
-    <main className="placeholder">
-      <h1>Heimdall</h1>
-      <p>An OpenTelemetry-native observability engine.</p>
-      <p>
-        Backend: <strong className={`health health-${health}`}>{health}</strong>
-      </p>
-    </main>
+    <Routes>
+      <Route element={<Layout />}>
+        <Route path="/" element={<Navigate to="/traces" replace />} />
+        <Route path="/traces" element={<TracesPage />} />
+        <Route path="/logs" element={<LogsPage />} />
+        <Route path="/service-map" element={<ServiceMapPage />} />
+        <Route path="*" element={<p className="page">Page not found.</p>} />
+      </Route>
+    </Routes>
   )
 }
