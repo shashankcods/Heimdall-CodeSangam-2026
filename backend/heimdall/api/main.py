@@ -6,14 +6,15 @@ One process owns the DuckDB connection (DuckDB allows one read-write process per
 file); request handlers get their own cursor from it.
 """
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 
 import duckdb
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceResponse
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 
-from heimdall.ingest.decoder import InvalidPayload, decode_traces
+from heimdall.ingest.decoder import InvalidPayload, decode_logs, decode_traces
 from heimdall.ingest.pipeline import BatchWriter, QueueFull
 from heimdall.queries.spans import recent_spans
 from heimdall.queries.traces import get_trace, list_services, list_traces
@@ -21,6 +22,7 @@ from heimdall.store.schema import connect
 
 PROTOBUF = "application/x-protobuf"
 EMPTY_TRACE_RESPONSE = ExportTraceServiceResponse().SerializeToString()
+EMPTY_LOGS_RESPONSE = ExportLogsServiceResponse().SerializeToString()
 MAX_SPANS_LIMIT = 1000
 MAX_TRACES_LIMIT = 500
 
@@ -28,14 +30,20 @@ MAX_TRACES_LIMIT = 500
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     conn = connect()
+    # One writer per table: separate queues, so a flood of logs can't block traces.
     span_writer = BatchWriter(conn, "spans")
+    log_writer = BatchWriter(conn, "logs")
     span_writer.start()
+    log_writer.start()
     app.state.conn = conn
     app.state.span_writer = span_writer
+    app.state.log_writer = log_writer
     try:
         yield
     finally:
-        await span_writer.close()  # flush what's still queued before exiting
+        # Flush what's still queued before exiting.
+        await span_writer.close()
+        await log_writer.close()
         conn.close()
 
 
@@ -52,23 +60,38 @@ def get_cursor(request: Request) -> Iterator[duckdb.DuckDBPyConnection]:
 
 # --- OTLP ingest -----------------------------------------------------------
 
-# async on purpose: submit() touches an asyncio.Queue, which must be used from
-# the event loop thread, not from FastAPI's sync-handler thread pool.
-@app.post("/v1/traces")
-async def ingest_traces(request: Request) -> Response:
+async def _ingest(
+    request: Request,
+    decode: Callable[[bytes, str | None], list],
+    writer: BatchWriter,
+    empty_response: bytes,
+) -> Response:
+    """Shared OTLP/HTTP handling: content type -> decode -> queue -> reply."""
     if "json" in request.headers.get("content-type", ""):
         return Response("OTLP/JSON is not supported yet; send application/x-protobuf",
                         status_code=415)
     body = await request.body()
     try:
-        spans = decode_traces(body, request.headers.get("content-encoding"))
+        records = decode(body, request.headers.get("content-encoding"))
     except InvalidPayload as e:
         return Response(str(e), status_code=400)
     try:
-        request.app.state.span_writer.submit(spans)
+        writer.submit(records)
     except QueueFull:
         return Response(status_code=429, headers={"Retry-After": "1"})
-    return Response(EMPTY_TRACE_RESPONSE, media_type=PROTOBUF)
+    return Response(empty_response, media_type=PROTOBUF)
+
+
+# async on purpose: submit() touches an asyncio.Queue, which must be used from
+# the event loop thread, not from FastAPI's sync-handler thread pool.
+@app.post("/v1/traces")
+async def ingest_traces(request: Request) -> Response:
+    return await _ingest(request, decode_traces, request.app.state.span_writer, EMPTY_TRACE_RESPONSE)
+
+
+@app.post("/v1/logs")
+async def ingest_logs(request: Request) -> Response:
+    return await _ingest(request, decode_logs, request.app.state.log_writer, EMPTY_LOGS_RESPONSE)
 
 
 # --- Query API -------------------------------------------------------------
