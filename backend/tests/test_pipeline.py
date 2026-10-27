@@ -44,6 +44,11 @@ def test_flushes_when_batch_size_reached(conn):
         writer.start()
         writer.submit(make_spans(3))
         await wait_for_rows(conn, 3)  # long before the 60 s interval
+        # Rows become visible at COMMIT, a moment before the stats are updated.
+        for _ in range(100):
+            if writer.stats.flushes:
+                break
+            await asyncio.sleep(0.01)
         assert writer.stats.flushes == 1
         await writer.close()
 
