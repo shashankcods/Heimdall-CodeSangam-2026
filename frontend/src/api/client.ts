@@ -1,12 +1,27 @@
 import type { LogEntry, LogFilters, TraceDetail, TraceFilters, TraceSummary } from './types'
 
+export const BACKEND_DOWN = "Can't reach the backend. Is it running?"
+
 // GET a relative /api path and return the parsed JSON, or throw on a non-2xx status.
 // FastAPI errors look like {"detail": "..."}; that message is used when present.
 async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(path)
+  let res: Response
+  try {
+    res = await fetch(path)
+  } catch {
+    throw new Error(BACKEND_DOWN)
+  }
   if (!res.ok) {
-    const body = await res.json().catch(() => null)
-    const detail = typeof body?.detail === 'string' ? body.detail : res.statusText
+    const text = await res.text().catch(() => '')
+    // The Vite dev proxy answers with an empty 5xx when the backend isn't running.
+    if (res.status >= 500 && text === '') throw new Error(BACKEND_DOWN)
+    let detail = res.statusText
+    try {
+      const body = JSON.parse(text)
+      if (typeof body?.detail === 'string') detail = body.detail
+    } catch {
+      // Not JSON: keep the status text.
+    }
     throw new Error(`${res.status}: ${detail}`)
   }
   return res.json() as Promise<T>

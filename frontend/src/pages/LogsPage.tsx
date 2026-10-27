@@ -5,6 +5,8 @@ import { SEVERITIES } from '../api/types'
 import type { LogEntry, LogFilters, Severity } from '../api/types'
 import { formatTimeMs } from '../lib/format'
 import { useDebouncedValue } from '../lib/useDebouncedValue'
+import { usePageTitle } from '../lib/usePageTitle'
+import { EmptyState, ErrorState, LoadingState } from '../components/StatusMessage'
 
 const LIMIT = 100
 
@@ -18,6 +20,7 @@ function logKey(log: LogEntry, index: number): string {
 }
 
 export default function LogsPage() {
+  usePageTitle('Logs')
   // ?trace_id=... in the URL, so the waterfall can link straight to a trace's logs.
   const [searchParams, setSearchParams] = useSearchParams()
   const traceId = searchParams.get('trace_id')
@@ -49,6 +52,12 @@ export default function LogsPage() {
     }),
     [debouncedQuery, regex, service, severity, traceId, debouncedTags],
   )
+
+  const hasFilters =
+    filters.q !== '' || filters.service !== null || filters.severity !== null ||
+    filters.traceId !== null || filters.tags.length > 0
+  const firstLoad = loading && logs.length === 0
+  const refresh = () => setRefreshCount((n) => n + 1)
 
   useEffect(() => {
     fetchServices().then(setServices).catch(() => setServices([]))
@@ -133,7 +142,7 @@ export default function LogsPage() {
           />
         </label>
 
-        <button onClick={() => setRefreshCount((n) => n + 1)}>Refresh</button>
+        <button onClick={refresh}>Refresh</button>
       </div>
 
       {traceId && (
@@ -145,14 +154,27 @@ export default function LogsPage() {
         </p>
       )}
 
-      {error && <p className="error-box">Could not load logs: {error}</p>}
+      {error ? (
+        <ErrorState
+          title="Could not load logs"
+          message={error}
+          // A 400 is a bad search (e.g. broken regex): fixing the input helps, retrying doesn't.
+          onRetry={error.startsWith('400') ? undefined : refresh}
+        />
+      ) : firstLoad ? (
+        <LoadingState label="Loading logs…" />
+      ) : logs.length === 0 ? (
+        hasFilters ? (
+          <EmptyState title="No logs match these filters">Try a shorter search or remove a filter.</EmptyState>
+        ) : (
+          <EmptyState title="No logs in the last hour">
+            Send some with <code>uv run demo/sdk_smoke.py</code>, then click Refresh.
+          </EmptyState>
+        )
+      ) : null}
 
-      {!error && !loading && logs.length === 0 && (
-        <p className="muted">No logs match. Logs are kept for the last hour by default.</p>
-      )}
-
-      {logs.length > 0 && (
-        <div className="table-scroll">
+      {!error && logs.length > 0 && (
+        <div className={loading ? 'table-scroll is-refreshing' : 'table-scroll'}>
           <table className="trace-table log-table">
             <thead>
               <tr>
