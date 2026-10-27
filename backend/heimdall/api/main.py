@@ -21,6 +21,7 @@ from heimdall.ingest.decoder import InvalidPayload, decode_logs, decode_traces
 from heimdall.ingest.pipeline import BatchWriter, QueueFull
 from heimdall.queries.logs import InvalidSearch, LogFilter, log_to_api, search_logs
 from heimdall.queries.spans import recent_spans
+from heimdall.queries.topology import service_map
 from heimdall.queries.traces import get_trace, list_services, list_traces
 from heimdall.store.schema import connect
 
@@ -138,6 +139,16 @@ def traces(
         to_ms=to_ms,
         limit=min(limit, MAX_TRACES_LIMIT),
     )}
+
+
+@app.get("/api/service-map")
+def service_map_endpoint(
+    from_ms: float | None = None,
+    to_ms: float | None = None,
+    cur: duckdb.DuckDBPyConnection = Depends(get_cursor),
+) -> dict:
+    """Services (nodes) and who calls whom (edges) in the range; last hour by default."""
+    return service_map(cur, from_ms=from_ms, to_ms=to_ms)
 
 
 @app.get("/api/traces/{trace_id}")
