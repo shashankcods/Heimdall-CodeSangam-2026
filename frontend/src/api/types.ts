@@ -43,3 +43,27 @@ export interface TraceDetail {
   duration_ms: number
   spans: Span[]
 }
+
+export const SEVERITIES = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL'] as const
+export type Severity = (typeof SEVERITIES)[number]
+
+export interface LogEntry {
+  timestamp_ms: number
+  service: string
+  severity: Severity | null
+  body: string | null
+  trace_id: string | null
+  span_id: string | null
+  attributes: Record<string, unknown>
+}
+
+export interface LogFilters {
+  q: string
+  regex: boolean
+  service: string | null
+  // Minimum level: WARN also returns ERROR and FATAL.
+  severity: Severity | null
+  traceId: string | null
+  // Each one "key:value"; a log must match all of them.
+  tags: string[]
+}
