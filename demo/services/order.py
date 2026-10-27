@@ -198,4 +198,5 @@ app, _tp, _lp = create_app()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=DEFAULT_PORT, log_level="info")
+    host = os.environ.get("DEMO_SERVICE_HOST", "127.0.0.1")
+    uvicorn.run(app, host=host, port=DEFAULT_PORT, log_level="info")

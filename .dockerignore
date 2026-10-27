@@ -1,0 +1,15 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.py[cod]
+*$py.class
+.pytest_cache
+*.duckdb
+*.duckdb.wal
+node_modules
+frontend/dist
+frontend/.vite
+.DS_Store
+Thumbs.db
+*.log

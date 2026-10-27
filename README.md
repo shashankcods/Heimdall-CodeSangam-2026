@@ -14,6 +14,85 @@ frontend/   React + TypeScript UI (Vite)
 demo/       Fake instrumented services + load generator
 ```
 
+## Docker Compose Deployment (Quick Start)
+
+Deploy the entire Heimdall platform, frontend UI, and the 3-service instrumented demo (`gateway -> order -> payment`) with one command.
+
+### Prerequisites
+
+- [Docker Engine](https://docs.docker.com/engine/) or [Docker Desktop](https://www.docker.com/products/docker-desktop/) (v24+)
+- Docker Compose (v2.20+)
+
+### One-Command Startup
+
+```bash
+docker compose up --build -d
+```
+
+This starts 5 networked containers with explicit health check dependencies:
+- **`backend`**: FastAPI + DuckDB at `http://localhost:4318` (OTLP ingestion & REST API)
+- **`frontend`**: React 19 UI served via Nginx at `http://localhost:5173` (with SSE streaming proxy)
+- **`payment`**: Demo payment authorization service at `http://localhost:8003`
+- **`order`**: Demo order validation service at `http://localhost:8002`
+- **`gateway`**: Demo ingress gateway at `http://localhost:8001`
+
+### Generate Demo Traffic
+
+Once the containers report healthy:
+
+```bash
+# Option A: Run in-container traffic generator via Compose profile
+docker compose run --rm demo-traffic
+
+# Option B: Run load generator from host using uv
+uv run demo/run_demo.py --traffic --count 10
+```
+
+### Verify Ingested Telemetry
+
+```bash
+# Option A: Run in-container verification via Compose profile
+docker compose run --rm demo-verify
+
+# Option B: Run verification from host using uv
+uv run demo/run_demo.py --verify
+```
+
+### Runtime Fault Injection
+
+Test live error rate propagation and watch the Service Map edge turn red in the UI:
+
+```bash
+# Inject 500 crash on payment service
+curl -X POST http://localhost:8003/fault/error -H "Content-Type: application/json" -d "{\"error_type\": \"500\", \"rate\": 1.0}"
+
+# Send traffic to trigger errors
+docker compose run --rm demo-traffic
+
+# Reset faults
+curl -X POST http://localhost:8001/fault/reset-all
+```
+
+### Stopping and Resetting Data
+
+```bash
+# Stop containers (preserves DuckDB data volume)
+docker compose down
+
+# Stop containers and wipe database for a clean demo
+docker compose down -v
+```
+
+### Inspecting Logs and Troubleshooting
+
+```bash
+# View backend logs
+docker compose logs -f backend
+
+# View all container health statuses
+docker compose ps
+```
+
 ## Running (backend)
 
 ```bash

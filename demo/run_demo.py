@@ -471,6 +471,7 @@ def main() -> int:
     parser.add_argument("--count", type=int, default=6, help="Request count for traffic generator")
     parser.add_argument("--heimdall-url", default=DEFAULT_HEIMDALL_URL, help="Heimdall backend URL")
     parser.add_argument("--gateway-port", type=int, default=DEFAULT_GATEWAY_PORT, help="Gateway port")
+    parser.add_argument("--gateway-url", default=None, help="Direct gateway base URL (defaults to http://127.0.0.1:<gateway_port>)")
     parser.add_argument("--order-port", type=int, default=DEFAULT_ORDER_PORT, help="Order service port")
     parser.add_argument("--payment-port", type=int, default=DEFAULT_PAYMENT_PORT, help="Payment service port")
 
@@ -505,8 +506,9 @@ def main() -> int:
         return 0
 
     if args.traffic:
-        print(f"Sending {args.count} requests to gateway at port {ports['gateway']}...")
-        res = send_demo_traffic(f"http://127.0.0.1:{ports['gateway']}", count=args.count)
+        gateway_url = args.gateway_url or f"http://127.0.0.1:{ports['gateway']}"
+        print(f"Sending {args.count} requests to gateway at {gateway_url}...")
+        res = send_demo_traffic(gateway_url, count=args.count)
         print("Traffic results:", res)
         return 0
 

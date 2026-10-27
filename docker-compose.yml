@@ -1,0 +1,160 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Heimdall Backend: OTLP Ingestion & Query Engine
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: heimdall-backend
+    ports:
+      - "4318:4318"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HEIMDALL_DB_PATH=/data/heimdall.duckdb
+      - HEIMDALL_MAX_PENDING=100000
+      - HEIMDALL_BATCH_SIZE=500
+      - HEIMDALL_FLUSH_INTERVAL=1.0
+      - HEIMDALL_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:80,http://frontend,http://frontend:80
+    volumes:
+      - heimdall-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4318/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Heimdall Frontend: React 19 UI with Nginx SPA & SSE Reverse Proxy
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: heimdall-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Demo Microservices: Payment (8003) -> Order (8002) -> Gateway (8001)
+  # ---------------------------------------------------------------------------
+  payment:
+    build:
+      context: .
+      dockerfile: demo/Dockerfile
+    container_name: heimdall-demo-payment
+    command: ["python", "demo/services/payment.py"]
+    ports:
+      - "8003:8003"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DEMO_SERVICE_HOST=0.0.0.0
+      - PAYMENT_SERVICE_PORT=8003
+      - HEIMDALL_URL=http://backend:4318
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    restart: unless-stopped
+
+  order:
+    build:
+      context: .
+      dockerfile: demo/Dockerfile
+    container_name: heimdall-demo-order
+    command: ["python", "demo/services/order.py"]
+    ports:
+      - "8002:8002"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DEMO_SERVICE_HOST=0.0.0.0
+      - ORDER_SERVICE_PORT=8002
+      - HEIMDALL_URL=http://backend:4318
+      - PAYMENT_SERVICE_URL=http://payment:8003
+    depends_on:
+      payment:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: demo/Dockerfile
+    container_name: heimdall-demo-gateway
+    command: ["python", "demo/services/gateway.py"]
+    ports:
+      - "8001:8001"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DEMO_SERVICE_HOST=0.0.0.0
+      - GATEWAY_SERVICE_PORT=8001
+      - HEIMDALL_URL=http://backend:4318
+      - ORDER_SERVICE_URL=http://order:8002
+      - PAYMENT_SERVICE_URL=http://payment:8003
+    depends_on:
+      order:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Optional Tools Profiles: Traffic Generator & Telemetry Verifier
+  # ---------------------------------------------------------------------------
+  demo-traffic:
+    build:
+      context: .
+      dockerfile: demo/Dockerfile
+    container_name: heimdall-demo-traffic
+    command: ["python", "demo/run_demo.py", "--traffic", "--count", "10", "--gateway-url", "http://gateway:8001"]
+    depends_on:
+      gateway:
+        condition: service_healthy
+    profiles:
+      - tools
+
+  demo-verify:
+    build:
+      context: .
+      dockerfile: demo/Dockerfile
+    container_name: heimdall-demo-verify
+    command: ["python", "demo/run_demo.py", "--verify", "--heimdall-url", "http://backend:4318"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    profiles:
+      - tools
+
+# ---------------------------------------------------------------------------
+# Persistent Storage for DuckDB Database
+# ---------------------------------------------------------------------------
+volumes:
+  heimdall-data:
+    name: heimdall-data
