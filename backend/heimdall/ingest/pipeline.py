@@ -20,6 +20,7 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -64,9 +65,12 @@ class BatchWriter:
         max_pending: int | None = None,
         batch_size: int | None = None,
         flush_interval: float | None = None,
+        on_flush: Callable[[list[Record]], None] | None = None,
     ):
         self.conn = conn
         self.table = table
+        # Called with each batch right after it's committed (e.g. live-tail broadcast).
+        self.on_flush = on_flush
         # ~100k spans at ~0.6-1.5 KB each = roughly 60-150 MB of queued data.
         self.max_pending = max_pending or _env_int("HEIMDALL_MAX_PENDING", 100_000)
         self.batch_size = batch_size or _env_int("HEIMDALL_BATCH_SIZE", 500)
@@ -141,6 +145,12 @@ class BatchWriter:
         except Exception:
             self.stats.failed += len(records)
             log.exception("failed to write %d records to %s", len(records), self.table)
+        else:
+            if self.on_flush is not None:
+                try:
+                    self.on_flush(records)
+                except Exception:  # a broken listener must never stop the writer
+                    log.exception("on_flush callback failed for %s", self.table)
         self.stats.flushes += 1
         self.stats.last_flush_ms = (time.perf_counter() - started) * 1000
 
