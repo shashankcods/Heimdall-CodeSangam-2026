@@ -16,7 +16,7 @@ from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsSer
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 from sse_starlette.sse import EventSourceResponse
 
-from heimdall.ingest.broadcast import LogBroadcaster
+from heimdall.ingest.broadcast import LogBroadcaster, TooManyViewers
 from heimdall.ingest.decoder import InvalidPayload, decode_logs, decode_traces
 from heimdall.ingest.pipeline import BatchWriter, QueueFull
 from heimdall.queries.logs import InvalidSearch, LogFilter, log_to_api, search_logs
@@ -205,6 +205,7 @@ async def logs_stream(
 
     Each matching log is sent as `event: log` with the same JSON shape as one
     /api/logs item. A `: ping` comment every ~15 s keeps the connection open.
+    Replies 503 when HEIMDALL_MAX_LIVE_VIEWERS viewers are already connected.
     """
     try:
         log_filter = LogFilter(q=q, regex=regex, service=service, severity=severity,
@@ -213,7 +214,10 @@ async def logs_stream(
         raise HTTPException(status_code=400, detail=str(e))
 
     broadcaster: LogBroadcaster = request.app.state.log_broadcaster
-    sub = broadcaster.subscribe(log_filter)
+    try:
+        sub = broadcaster.subscribe(log_filter)
+    except TooManyViewers as e:
+        raise HTTPException(status_code=503, detail=str(e), headers={"Retry-After": "5"})
 
     async def events():
         try:

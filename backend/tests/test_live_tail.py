@@ -9,7 +9,7 @@ import pytest
 import uvicorn
 
 from heimdall.api.main import app
-from heimdall.ingest.broadcast import LogBroadcaster, Subscription
+from heimdall.ingest.broadcast import LogBroadcaster, Subscription, TooManyViewers
 from heimdall.ingest.models import LogRecord, Span
 from heimdall.ingest.pipeline import BatchWriter
 from heimdall.queries.logs import InvalidSearch, LogFilter, log_to_api
@@ -111,6 +111,27 @@ def test_slow_viewer_drops_extra_logs_without_affecting_others():
         assert fast.queue.qsize() == 5 and fast.dropped == 0  # fast viewer got everything
 
     asyncio.run(scenario())
+
+
+def test_viewer_cap_rejects_extra_viewers_until_one_leaves():
+    async def scenario():
+        hub = LogBroadcaster(max_viewers=2)
+        first = hub.subscribe(LogFilter())
+        hub.subscribe(LogFilter())
+        with pytest.raises(TooManyViewers):
+            hub.subscribe(LogFilter())
+        hub.unsubscribe(first)
+        hub.subscribe(LogFilter())  # a slot freed up
+        assert hub.subscriber_count == 2
+
+    asyncio.run(scenario())
+
+
+def test_viewer_cap_from_env(monkeypatch):
+    monkeypatch.setenv("HEIMDALL_MAX_LIVE_VIEWERS", "7")
+    assert LogBroadcaster().max_viewers == 7
+    monkeypatch.delenv("HEIMDALL_MAX_LIVE_VIEWERS")
+    assert LogBroadcaster().max_viewers == 50
 
 
 # --- BatchWriter on_flush hook ------------------------------------------------------
@@ -221,6 +242,19 @@ def test_stream_delivers_matching_logs_end_to_end(live_server):
     }
     # Disconnecting removes the viewer.
     wait_for(lambda: app.state.log_broadcaster.subscriber_count == 0)
+
+
+def test_stream_returns_503_when_viewer_limit_reached(live_server):
+    hub = app.state.log_broadcaster
+    hub.max_viewers = 1
+    occupant = hub.subscribe(LogFilter())  # the one allowed viewer
+    try:
+        r = httpx.get(f"{live_server}/api/logs/stream")
+        assert r.status_code == 503
+        assert r.headers["retry-after"] == "5"
+        assert "limited to 1 viewers" in r.json()["detail"]
+    finally:
+        hub.unsubscribe(occupant)
 
 
 def test_stream_rejects_bad_filters_with_400(live_server):
