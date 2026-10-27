@@ -6,6 +6,7 @@ One process owns the DuckDB connection (DuckDB allows one read-write process per
 file); request handlers get their own cursor from it.
 """
 
+import json
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 
@@ -13,10 +14,12 @@ import duckdb
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceResponse
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
+from sse_starlette.sse import EventSourceResponse
 
+from heimdall.ingest.broadcast import LogBroadcaster
 from heimdall.ingest.decoder import InvalidPayload, decode_logs, decode_traces
 from heimdall.ingest.pipeline import BatchWriter, QueueFull
-from heimdall.queries.logs import InvalidSearch, search_logs
+from heimdall.queries.logs import InvalidSearch, LogFilter, log_to_api, search_logs
 from heimdall.queries.spans import recent_spans
 from heimdall.queries.traces import get_trace, list_services, list_traces
 from heimdall.store.schema import connect
@@ -27,19 +30,23 @@ EMPTY_LOGS_RESPONSE = ExportLogsServiceResponse().SerializeToString()
 MAX_SPANS_LIMIT = 1000
 MAX_TRACES_LIMIT = 500
 MAX_LOGS_LIMIT = 1000
+SSE_PING_SECONDS = 15
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     conn = connect()
+    log_broadcaster = LogBroadcaster()
     # One writer per table: separate queues, so a flood of logs can't block traces.
     span_writer = BatchWriter(conn, "spans")
-    log_writer = BatchWriter(conn, "logs")
+    # Every committed log batch is also pushed to live-tail viewers.
+    log_writer = BatchWriter(conn, "logs", on_flush=log_broadcaster.publish)
     span_writer.start()
     log_writer.start()
     app.state.conn = conn
     app.state.span_writer = span_writer
     app.state.log_writer = log_writer
+    app.state.log_broadcaster = log_broadcaster
     try:
         yield
     finally:
@@ -141,6 +148,17 @@ def trace(trace_id: str, cur: duckdb.DuckDBPyConnection = Depends(get_cursor)) -
     return result
 
 
+def _parse_tags(tag: list[str]) -> list[tuple[str, str]]:
+    """?tag=key:value (repeatable) -> [(key, value)]. Splits on the FIRST colon; values may contain more."""
+    tags = []
+    for t in tag:
+        key, sep, value = t.partition(":")
+        if not sep or not key:
+            raise HTTPException(status_code=400, detail=f"tag must look like key:value, got {t!r}")
+        tags.append((key, value))
+    return tags
+
+
 @app.get("/api/logs")
 def logs(
     q: str | None = None,
@@ -155,12 +173,6 @@ def logs(
     cur: duckdb.DuckDBPyConnection = Depends(get_cursor),
 ) -> dict:
     """Log search. Repeat ?tag=key:value to filter on attributes (all must match)."""
-    tags = []
-    for t in tag:
-        key, sep, value = t.partition(":")  # split on the FIRST colon; values may contain more
-        if not sep or not key:
-            raise HTTPException(status_code=400, detail=f"tag must look like key:value, got {t!r}")
-        tags.append((key, value))
     try:
         return {"logs": search_logs(
             cur,
@@ -169,13 +181,49 @@ def logs(
             service=service,
             severity=severity,
             trace_id=trace_id,
-            tags=tags,
+            tags=_parse_tags(tag),
             from_ms=from_ms,
             to_ms=to_ms,
             limit=min(limit, MAX_LOGS_LIMIT),
         )}
     except InvalidSearch as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# async on purpose: subscriptions use asyncio queues fed from the event loop.
+@app.get("/api/logs/stream")
+async def logs_stream(
+    request: Request,
+    q: str | None = None,
+    regex: bool = False,
+    service: str | None = None,
+    severity: str | None = None,
+    trace_id: str | None = None,
+    tag: list[str] = Query(default=[]),
+) -> EventSourceResponse:
+    """Live tail over SSE. Same filters as /api/logs; only logs written after connecting.
+
+    Each matching log is sent as `event: log` with the same JSON shape as one
+    /api/logs item. A `: ping` comment every ~15 s keeps the connection open.
+    """
+    try:
+        log_filter = LogFilter(q=q, regex=regex, service=service, severity=severity,
+                               trace_id=trace_id, tags=_parse_tags(tag))
+    except InvalidSearch as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    broadcaster: LogBroadcaster = request.app.state.log_broadcaster
+    sub = broadcaster.subscribe(log_filter)
+
+    async def events():
+        try:
+            while True:
+                record = await sub.queue.get()
+                yield {"event": "log", "data": json.dumps(log_to_api(record))}
+        finally:
+            broadcaster.unsubscribe(sub)  # runs when the browser disconnects
+
+    return EventSourceResponse(events(), ping=SSE_PING_SECONDS)
 
 
 @app.get("/api/spans")

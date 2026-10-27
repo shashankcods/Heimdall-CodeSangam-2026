@@ -6,13 +6,19 @@
 - Tags filter on attributes: every (key, value) pair must match. Values compare
   as text, so a numeric attribute retry=0 matches the tag ("retry", "0").
 - Times leave the database as milliseconds (float); see queries/spans.py.
+
+LogFilter applies the same filters in Python, for the live tail: new logs are
+matched as they're written instead of being queried from the table.
 """
 
 import json
+import re
+from dataclasses import dataclass, field
 from typing import Any
 
 import duckdb
 
+from heimdall.ingest.models import LogRecord
 from heimdall.queries.common import rows_as_dicts, time_range_ns
 
 SEVERITY_ORDER = ("TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL")
@@ -20,6 +26,76 @@ SEVERITY_ORDER = ("TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL")
 
 class InvalidSearch(ValueError):
     """The search can't run as given (bad regex or severity). Maps to HTTP 400."""
+
+
+def _min_levels(severity: str | None) -> tuple[str, ...] | None:
+    """'WARN' -> ('WARN', 'ERROR', 'FATAL'); None -> no severity filter."""
+    if not severity:
+        return None
+    level = severity.strip().upper()
+    if level not in SEVERITY_ORDER:
+        raise InvalidSearch(f"unknown severity {severity!r}; use one of {', '.join(SEVERITY_ORDER)}")
+    return SEVERITY_ORDER[SEVERITY_ORDER.index(level):]
+
+
+def _as_text(value: Any) -> str:
+    # Matches DuckDB's json_extract_string: strings as-is, everything else as JSON (0 -> "0", True -> "true").
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+def log_to_api(record: LogRecord) -> dict[str, Any]:
+    """A just-written LogRecord in the same shape as one item of GET /api/logs."""
+    return {
+        "timestamp_ms": record.timestamp / 1e6,
+        "service": record.service,
+        "severity": record.severity,
+        "body": record.body,
+        "trace_id": record.trace_id,
+        "span_id": record.span_id,
+        "attributes": record.attributes,
+    }
+
+
+@dataclass
+class LogFilter:
+    """The /api/logs filters (minus time range and limit), checked in Python."""
+
+    q: str | None = None
+    regex: bool = False
+    service: str | None = None
+    severity: str | None = None
+    trace_id: str | None = None
+    tags: list[tuple[str, str]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Validate up front so a bad filter is a 400 when the stream opens, not a silent no-match.
+        self._levels = _min_levels(self.severity)
+        self._pattern = None
+        if self.q and self.regex:
+            try:
+                self._pattern = re.compile(self.q)
+            except re.error as e:
+                raise InvalidSearch(f"invalid regex: {e}") from e
+        self._trace_id = self.trace_id.lower() if self.trace_id else None
+
+    def matches(self, record: LogRecord) -> bool:
+        body = record.body or ""
+        if self.q:
+            if self._pattern is not None:
+                if not self._pattern.search(body):
+                    return False
+            elif self.q.lower() not in body.lower():
+                return False
+        if self.service and record.service != self.service:
+            return False
+        if self._levels is not None and record.severity not in self._levels:
+            return False
+        if self._trace_id and record.trace_id != self._trace_id:
+            return False
+        for key, value in self.tags:
+            if key not in record.attributes or _as_text(record.attributes[key]) != value:
+                return False
+        return True
 
 
 def _json_path(key: str) -> str:
@@ -51,12 +127,10 @@ def search_logs(
     if service:
         where.append("service = $service")
         params["service"] = service
-    if severity:
-        level = severity.strip().upper()
-        if level not in SEVERITY_ORDER:
-            raise InvalidSearch(f"unknown severity {severity!r}; use one of {', '.join(SEVERITY_ORDER)}")
+    levels = _min_levels(severity)
+    if levels:
         where.append("list_contains($levels, severity)")
-        params["levels"] = list(SEVERITY_ORDER[SEVERITY_ORDER.index(level):])
+        params["levels"] = list(levels)
     if trace_id:
         where.append("trace_id = $trace_id")
         params["trace_id"] = trace_id.lower()
