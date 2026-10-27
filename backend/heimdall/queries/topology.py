@@ -98,7 +98,12 @@ def service_map(
 ) -> dict[str, list[dict[str, Any]]]:
     """Nodes (every service seen in the range) and edges (service-to-service calls)."""
     from_ns, to_ns = time_range_ns(from_ms, to_ms)
-    return {
-        "nodes": service_nodes(cur, from_ns, to_ns),
-        "edges": service_edges(cur, from_ns, to_ns),
-    }
+    # Two queries, one snapshot: without a transaction a batch committed between
+    # them could give edges that point at services missing from the node list.
+    cur.execute("BEGIN TRANSACTION")
+    try:
+        nodes = service_nodes(cur, from_ns, to_ns)
+        edges = service_edges(cur, from_ns, to_ns)
+    finally:
+        cur.execute("COMMIT")
+    return {"nodes": nodes, "edges": edges}

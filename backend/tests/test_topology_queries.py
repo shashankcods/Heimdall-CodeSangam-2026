@@ -136,6 +136,25 @@ def test_duplicate_spans_counted_once(cur):
     assert nodes_by_id(result)["gateway"]["request_count"] == 1
 
 
+def test_nodes_and_edges_come_from_one_snapshot(cur, monkeypatch):
+    """A batch committed between the two queries must not split the result."""
+    import heimdall.queries.topology as topology
+
+    real_nodes = topology.service_nodes
+
+    def nodes_then_concurrent_write(c, from_ns, to_ns):
+        nodes = real_nodes(c, from_ns, to_ns)
+        other = c.cursor()  # another cursor on the same database, like the writer thread
+        insert(other, order_trace("a" * 32))
+        other.close()
+        return nodes
+
+    monkeypatch.setattr(topology, "service_nodes", nodes_then_concurrent_write)
+    result = service_map(cur, **WINDOW)
+    assert result == {"nodes": [], "edges": []}  # the concurrent write is invisible to both queries
+    assert len(service_map(cur, **WINDOW)["edges"]) == 2  # and visible to the next request
+
+
 def test_empty_range_returns_empty_lists(cur):
     assert service_map(cur, **WINDOW) == {"nodes": [], "edges": []}
     insert(cur, order_trace("a" * 32))
