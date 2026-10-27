@@ -14,7 +14,7 @@ Measures:
 3. Backpressure resilience: verifies HTTP 429 (Too Many Requests) when queue saturates.
 
 Usage:
-    uv run bench/ingest_bench.py [--url http://localhost:4318/v1/traces] [--batches 200] [--concurrency 10]
+    uv run bench/bench_ingest.py [--url http://localhost:4318/v1/traces] [--batches 200] [--concurrency 10]
 """
 
 import argparse

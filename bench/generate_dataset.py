@@ -10,7 +10,7 @@
 Imports schema and models from backend (read-only) as mandated by TEAM.md.
 
 Usage:
-    uv run bench/generate.py --spans 1000000 --db-path bench.duckdb
+    uv run bench/generate_dataset.py --spans 1000000 --db-path bench.duckdb
 """
 
 import argparse
