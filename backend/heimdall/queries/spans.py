@@ -8,10 +8,7 @@ from typing import Any
 
 import duckdb
 
-
-def _rows_as_dicts(cur: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
-    columns = [d[0] for d in cur.description]
-    return [dict(zip(columns, row)) for row in cur.fetchall()]
+from heimdall.queries.common import rows_as_dicts
 
 
 def recent_spans(cur: duckdb.DuckDBPyConnection, limit: int = 100) -> list[dict[str, Any]]:
@@ -28,4 +25,4 @@ def recent_spans(cur: duckdb.DuckDBPyConnection, limit: int = 100) -> list[dict[
         """,
         [limit],
     )
-    return _rows_as_dicts(cur)
+    return rows_as_dicts(cur)

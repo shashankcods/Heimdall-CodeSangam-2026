@@ -9,25 +9,11 @@ Rules applied in every query here (decided in step 2a):
 """
 
 import json
-import time
 from typing import Any
 
 import duckdb
 
-DEFAULT_WINDOW_MS = 60 * 60 * 1000  # last 1 hour
-
-
-def _time_range_ns(from_ms: float | None, to_ms: float | None) -> tuple[int, int]:
-    """Default to the last hour; return the range in nanoseconds."""
-    now_ms = time.time() * 1000
-    to_ms = now_ms if to_ms is None else to_ms
-    from_ms = to_ms - DEFAULT_WINDOW_MS if from_ms is None else from_ms
-    return int(from_ms * 1_000_000), int(to_ms * 1_000_000)
-
-
-def _rows_as_dicts(cur: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
-    columns = [d[0] for d in cur.description]
-    return [dict(zip(columns, row)) for row in cur.fetchall()]
+from heimdall.queries.common import rows_as_dicts, time_range_ns
 
 
 # For each root field: take it from the span with no parent if the trace has
@@ -95,7 +81,7 @@ def list_traces(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """One summary row per trace, newest first."""
-    from_ns, to_ns = _time_range_ns(from_ms, to_ms)
+    from_ns, to_ns = time_range_ns(from_ms, to_ms)
     cur.execute(LIST_TRACES_SQL, {
         "from_ns": from_ns,
         "to_ns": to_ns,
@@ -104,7 +90,7 @@ def list_traces(
         "min_duration_ns": None if min_duration_ms is None else int(min_duration_ms * 1_000_000),
         "limit": limit,
     })
-    return _rows_as_dicts(cur)
+    return rows_as_dicts(cur)
 
 
 GET_TRACE_SQL = """
@@ -128,7 +114,7 @@ def get_trace(cur: duckdb.DuckDBPyConnection, trace_id: str) -> dict[str, Any] |
     whose parent hasn't arrived yet is still returned).
     """
     cur.execute(GET_TRACE_SQL, {"trace_id": trace_id})
-    spans = _rows_as_dicts(cur)
+    spans = rows_as_dicts(cur)
     if not spans:
         return None
     for span in spans:
@@ -150,7 +136,7 @@ def list_services(
     to_ms: float | None = None,
 ) -> list[str]:
     """Service names that produced spans in the range, alphabetical."""
-    from_ns, to_ns = _time_range_ns(from_ms, to_ms)
+    from_ns, to_ns = time_range_ns(from_ms, to_ms)
     cur.execute(
         """
         SELECT DISTINCT service FROM spans

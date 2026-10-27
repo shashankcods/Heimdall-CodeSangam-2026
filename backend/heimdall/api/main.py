@@ -16,6 +16,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTrace
 
 from heimdall.ingest.decoder import InvalidPayload, decode_logs, decode_traces
 from heimdall.ingest.pipeline import BatchWriter, QueueFull
+from heimdall.queries.logs import InvalidSearch, search_logs
 from heimdall.queries.spans import recent_spans
 from heimdall.queries.traces import get_trace, list_services, list_traces
 from heimdall.store.schema import connect
@@ -25,6 +26,7 @@ EMPTY_TRACE_RESPONSE = ExportTraceServiceResponse().SerializeToString()
 EMPTY_LOGS_RESPONSE = ExportLogsServiceResponse().SerializeToString()
 MAX_SPANS_LIMIT = 1000
 MAX_TRACES_LIMIT = 500
+MAX_LOGS_LIMIT = 1000
 
 
 @asynccontextmanager
@@ -137,6 +139,43 @@ def trace(trace_id: str, cur: duckdb.DuckDBPyConnection = Depends(get_cursor)) -
     if result is None:
         raise HTTPException(status_code=404, detail="trace not found")
     return result
+
+
+@app.get("/api/logs")
+def logs(
+    q: str | None = None,
+    regex: bool = False,
+    service: str | None = None,
+    severity: str | None = None,
+    trace_id: str | None = None,
+    tag: list[str] = Query(default=[]),
+    from_ms: float | None = None,
+    to_ms: float | None = None,
+    limit: int = Query(100, ge=1),
+    cur: duckdb.DuckDBPyConnection = Depends(get_cursor),
+) -> dict:
+    """Log search. Repeat ?tag=key:value to filter on attributes (all must match)."""
+    tags = []
+    for t in tag:
+        key, sep, value = t.partition(":")  # split on the FIRST colon; values may contain more
+        if not sep or not key:
+            raise HTTPException(status_code=400, detail=f"tag must look like key:value, got {t!r}")
+        tags.append((key, value))
+    try:
+        return {"logs": search_logs(
+            cur,
+            q=q,
+            regex=regex,
+            service=service,
+            severity=severity,
+            trace_id=trace_id,
+            tags=tags,
+            from_ms=from_ms,
+            to_ms=to_ms,
+            limit=min(limit, MAX_LOGS_LIMIT),
+        )}
+    except InvalidSearch as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/spans")
