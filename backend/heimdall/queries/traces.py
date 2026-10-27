@@ -19,6 +19,8 @@ DEFAULT_WINDOW_MS = 60 * 60 * 1000  # last 1 hour
 
 def _time_range_ns(from_ms: float | None, to_ms: float | None) -> tuple[int, int]:
     """Default to the last hour; return the range in nanoseconds."""
+    if from_ms is not None and to_ms is not None and from_ms > to_ms:
+        raise ValueError("from_ms cannot be greater than to_ms")
     now_ms = time.time() * 1000
     to_ms = now_ms if to_ms is None else to_ms
     from_ms = to_ms - DEFAULT_WINDOW_MS if from_ms is None else from_ms

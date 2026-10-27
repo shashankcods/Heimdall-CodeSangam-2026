@@ -126,7 +126,10 @@ def services(
     to_ms: float | None = None,
     cur: duckdb.DuckDBPyConnection = Depends(get_cursor),
 ) -> dict:
-    return {"services": list_services(cur, from_ms=from_ms, to_ms=to_ms)}
+    try:
+        return {"services": list_services(cur, from_ms=from_ms, to_ms=to_ms)}
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 @app.get("/api/traces")
@@ -139,15 +142,18 @@ def traces(
     limit: int = Query(50, ge=1),
     cur: duckdb.DuckDBPyConnection = Depends(get_cursor),
 ) -> dict:
-    return {"traces": list_traces(
-        cur,
-        service=service,
-        errors_only=errors_only,
-        min_duration_ms=min_duration_ms,
-        from_ms=from_ms,
-        to_ms=to_ms,
-        limit=min(limit, MAX_TRACES_LIMIT),
-    )}
+    try:
+        return {"traces": list_traces(
+            cur,
+            service=service,
+            errors_only=errors_only,
+            min_duration_ms=min_duration_ms,
+            from_ms=from_ms,
+            to_ms=to_ms,
+            limit=min(limit, MAX_TRACES_LIMIT),
+        )}
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 @app.get("/api/traces/{trace_id}")
