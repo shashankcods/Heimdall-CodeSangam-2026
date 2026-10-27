@@ -1,25 +1,33 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useLocation, useParams } from 'react-router'
 import { fetchTrace } from '../api/client'
 import type { TraceDetail } from '../api/types'
 import { buildSpanTree, flattenTree } from '../lib/spanTree'
 import { formatDuration, formatTime } from '../lib/format'
+import { usePageTitle } from '../lib/usePageTitle'
 import Waterfall from '../components/Waterfall'
 import SpanDetails from '../components/SpanDetails'
+import { ErrorState, LoadingState } from '../components/StatusMessage'
 
 export default function TraceDetailPage() {
   // The :traceId part of the URL /traces/:traceId
   const { traceId } = useParams()
+  // Set by the trace list when it opens a trace, e.g. "?errors=1".
+  const location = useLocation()
+  const listSearch = (location.state as { listSearch?: string } | null)?.listSearch ?? ''
   const [trace, setTrace] = useState<TraceDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null)
+  const [reloadCount, setReloadCount] = useState(0)
 
   useEffect(() => {
     if (!traceId) return
     let ignore = false
     setTrace(null)
     setError(null)
+    // A different trace starts fully expanded.
+    setCollapsed(new Set())
     fetchTrace(traceId)
       .then((result) => {
         if (ignore) return
@@ -34,7 +42,7 @@ export default function TraceDetailPage() {
     return () => {
       ignore = true
     }
-  }, [traceId])
+  }, [traceId, reloadCount])
 
   // Rebuild the tree only when the trace changes, not on every click.
   const tree = useMemo(() => (trace ? buildSpanTree(trace.spans) : []), [trace])
@@ -51,15 +59,23 @@ export default function TraceDetailPage() {
   const selectedSpan = trace?.spans.find((s) => s.span_id === selectedSpanId) ?? null
   const root = tree[0]?.span
   const errorCount = trace?.spans.filter((s) => s.status_code === 'ERROR').length ?? 0
+  usePageTitle(root?.name ?? 'Trace')
 
   return (
     <section className="page">
-      <Link to="/traces" className="back-link">
+      <Link to={`/traces${listSearch}`} className="back-link">
         ← All traces
       </Link>
 
-      {error && <p className="error-box">Could not load trace: {error}</p>}
-      {!error && !trace && <p className="muted">Loading trace…</p>}
+      {error && (
+        <ErrorState
+          title="Could not load trace"
+          message={error}
+          // Retrying can't help when the trace doesn't exist.
+          onRetry={error === 'Trace not found.' ? undefined : () => setReloadCount((n) => n + 1)}
+        />
+      )}
+      {!error && !trace && <LoadingState label="Loading trace…" />}
 
       {trace && (
         <>
