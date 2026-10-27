@@ -1,0 +1,17 @@
+{
+  "name": "heimdall-demo-node-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cross-language OpenTelemetry Node.js microservice for Heimdall demo",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --require ./tracer.js server.js"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.55.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.55.0",
+    "@opentelemetry/sdk-node": "^0.55.0",
+    "express": "^4.21.0"
+  }
+}
