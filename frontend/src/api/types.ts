@@ -43,3 +43,47 @@ export interface TraceDetail {
   duration_ms: number
   spans: Span[]
 }
+
+// Log records from /api/logs and SSE /api/logs/stream
+export interface LogRecord {
+  timestamp_ms: number
+  timestamp: number
+  service: string
+  severity: string | null
+  body: string | null
+  trace_id: string | null
+  span_id: string | null
+  attributes: Record<string, unknown>
+}
+
+export interface LogFilters {
+  query?: string | null
+  regex?: string | null
+  service?: string | null
+  severity?: string | null
+  traceId?: string | null
+  fromMs?: number | null
+  toMs?: number | null
+  limit?: number
+}
+
+// Service topology graph shapes from /api/service-map
+export interface ServiceNode {
+  id?: string
+  service?: string
+  name?: string
+}
+
+export interface ServiceEdge {
+  source: string
+  target: string
+  call_count: number
+  avg_latency_ms: number
+  error_count: number
+  error_rate: number // fraction in [0.0, 1.0]
+}
+
+export interface ServiceMapResponse {
+  nodes: ServiceNode[]
+  edges: ServiceEdge[]
+}
