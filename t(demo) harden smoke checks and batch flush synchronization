@@ -1,0 +1,379 @@
+[1mdiff --git a/backend/tests/test_pipeline.py b/backend/tests/test_pipeline.py[m
+[1mindex adb021e..d58ae30 100644[m
+[1m--- a/backend/tests/test_pipeline.py[m
+[1m+++ b/backend/tests/test_pipeline.py[m
+[36m@@ -33,6 +33,15 @@[m [masync def wait_for_rows(conn, expected, timeout=2.0):[m
+     raise AssertionError(f"expected {expected} rows, got {count(conn)}")[m
+ [m
+ [m
+[32m+[m[32masync def wait_for_flush(writer, expected=1, timeout=2.0):[m
+[32m+[m[32m    deadline = time.monotonic() + timeout[m
+[32m+[m[32m    while time.monotonic() < deadline:[m
+[32m+[m[32m        if writer.stats.flushes >= expected:[m
+[32m+[m[32m            return[m
+[32m+[m[32m        await asyncio.sleep(0.01)[m
+[32m+[m[32m    raise AssertionError(f"expected {expected} flushes, got {writer.stats.flushes}")[m
+[32m+[m
+[32m+[m
+ @pytest.fixture[m
+ def conn(tmp_path):[m
+     return connect(str(tmp_path / "test.duckdb"))[m
+[36m@@ -44,6 +53,7 @@[m [mdef test_flushes_when_batch_size_reached(conn):[m
+         writer.start()[m
+         writer.submit(make_spans(3))[m
+         await wait_for_rows(conn, 3)  # long before the 60 s interval[m
+[32m+[m[32m        await wait_for_flush(writer, 1)[m
+         assert writer.stats.flushes == 1[m
+         await writer.close()[m
+ [m
+[1mdiff --git a/demo/sdk_smoke.py b/demo/sdk_smoke.py[m
+[1mindex 0c6687d..99803fc 100644[m
+[1m--- a/demo/sdk_smoke.py[m
+[1m+++ b/demo/sdk_smoke.py[m
+[36m@@ -26,109 +26,372 @@[m [mimport sys[m
+ import threading[m
+ import time[m
+ [m
+[32m+[m[32mfrom typing import Any[m
+[32m+[m
+ import httpx[m
+[31m-import uvicorn[m
+[31m-from fastapi import FastAPI, HTTPException[m
+[31m-from opentelemetry import trace[m
+[31m-from opentelemetry._logs import set_logger_provider[m
+[31m-from opentelemetry.exporter.otlp.proto.http import Compression[m
+[31m-from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter[m
+[31m-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter[m
+[31m-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor[m
+[31m-from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler[m
+[31m-from opentelemetry.sdk._logs.export import BatchLogRecordProcessor[m
+[31m-from opentelemetry.sdk.resources import Resource[m
+[31m-from opentelemetry.sdk.trace import TracerProvider[m
+[31m-from opentelemetry.sdk.trace.export import BatchSpanProcessor[m
+ [m
+[32m+[m[32m# Optional OTel / FastAPI server dependencies for running the demo service.[m
+[32m+[m[32m# Kept in a conditional import block so unit tests can import polling & verification[m
+[32m+[m[32m# utilities without needing the full OTel SDK installed in the test environment.[m
+[32m+[m[32mtry:[m
+[32m+[m[32m    from fastapi import FastAPI, HTTPException[m
+[32m+[m[32m    import uvicorn[m
+[32m+[m[32m    from opentelemetry import trace[m
+[32m+[m[32m    from opentelemetry._logs import set_logger_provider[m
+[32m+[m[32m    from opentelemetry.exporter.otlp.proto.http import Compression[m
+[32m+[m[32m    from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter[m
+[32m+[m[32m    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter[m
+[32m+[m[32m    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor[m
+[32m+[m[32m    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler[m
+[32m+[m[32m    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor[m
+[32m+[m[32m    from opentelemetry.sdk.resources import Resource[m
+[32m+[m[32m    from opentelemetry.sdk.trace import TracerProvider[m
+[32m+[m[32m    from opentelemetry.sdk.trace.export import BatchSpanProcessor[m
+[32m+[m
+[32m+[m[32m    HAS_OTEL_SERVER = True[m
+[32m+[m[32mexcept ImportError:[m
+[32m+[m[32m    HAS_OTEL_SERVER = False[m
+[32m+[m
+[32m+[m
+[32m+[m[32m# Default configuration[m
+ HEIMDALL = os.environ.get("HEIMDALL_URL", "http://localhost:4318")[m
+[31m-SERVICE = "sdk-smoke-service"[m
+[31m-PORT = 8001[m
+[31m-REQUESTS = 6[m
+[31m-resource = Resource.create({"service.name": SERVICE})[m
+[31m-[m
+[31m-provider = TracerProvider(resource=resource)[m
+[31m-provider.add_span_processor(BatchSpanProcessor([m
+[31m-    OTLPSpanExporter(endpoint=f"{HEIMDALL}/v1/traces", compression=Compression.Gzip)[m
+[31m-))[m
+[31m-trace.set_tracer_provider(provider)[m
+[31m-tracer = trace.get_tracer("sdk-smoke")[m
+[31m-[m
+[31m-# Route standard-library logging through the OTel SDK to /v1/logs.[m
+[31m-log_provider = LoggerProvider(resource=resource)[m
+[31m-log_provider.add_log_record_processor(BatchLogRecordProcessor([m
+[31m-    OTLPLogExporter(endpoint=f"{HEIMDALL}/v1/logs", compression=Compression.Gzip)[m
+[31m-))[m
+[31m-set_logger_provider(log_provider)[m
+[31m-log = logging.getLogger("sdk-smoke")[m
+[31m-log.setLevel(logging.INFO)[m
+[31m-log.addHandler(LoggingHandler(logger_provider=log_provider))[m
+[31m-[m
+[31m-app = FastAPI()[m
+[31m-[m
+[31m-[m
+[31m-@app.get("/order/{n}")[m
+[31m-def order(n: int):[m
+[31m-    log.info("creating order %d", n)[m
+[31m-    with tracer.start_as_current_span("INSERT orders", kind=trace.SpanKind.CLIENT) as span:[m
+[31m-        span.set_attribute("db.system", "postgresql")[m
+[31m-        time.sleep(0.01)[m
+[31m-    with tracer.start_as_current_span("chargeCard") as span:[m
+[31m-        time.sleep(0.02)[m
+[31m-        if n % 3 == 0:[m
+[31m-            log.error("card declined for order %d", n)[m
+[31m-            span.set_status(trace.Status(trace.StatusCode.ERROR, "card declined"))[m
+[31m-            raise HTTPException(status_code=502, detail="payment failed")[m
+[31m-    return {"ok": True}[m
+[31m-[m
+[31m-[m
+[31m-FastAPIInstrumentor.instrument_app(app)[m
+[32m+[m[32mSERVICE = os.environ.get("HEIMDALL_SERVICE_NAME", "sdk-smoke-service")[m
+[32m+[m[32mPORT = int(os.environ.get("HEIMDALL_DEMO_PORT", "8001"))[m
+[32m+[m[32mREQUESTS = int(os.environ.get("HEIMDALL_SMOKE_REQUESTS", "6"))[m
+ [m
+ [m
+[31m-def main() -> int:[m
+[31m-    server = uvicorn.Server(uvicorn.Config(app, port=PORT, log_level="warning"))[m
+[31m-    threading.Thread(target=server.run, daemon=True).start()[m
+[31m-    while not server.started:[m
+[31m-        time.sleep(0.05)[m
+[31m-[m
+[31m-    log.info("smoke service started")  # outside any request: no trace ID[m
+[31m-    for n in range(1, REQUESTS + 1):[m
+[31m-        httpx.get(f"http://127.0.0.1:{PORT}/order/{n}")[m
+[31m-    provider.force_flush()  # export now instead of waiting for the SDK's 5 s timer[m
+[31m-    log_provider.force_flush()[m
+[31m-    server.should_exit = True[m
+[32m+[m[32m# ---------------------------------------------------------------------------[m
+[32m+[m[32m# Custom exceptions for clear failure diagnostics[m
+[32m+[m[32m# ---------------------------------------------------------------------------[m
+[32m+[m
+[32m+[m[32mclass SmokeTestError(Exception):[m
+[32m+[m[32m    """Base exception for smoke test failures."""[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass BackendUnreachableError(SmokeTestError):[m
+[32m+[m[32m    """Raised when the Heimdall backend cannot be reached or is unhealthy."""[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass DemoServiceStartupError(SmokeTestError):[m
+[32m+[m[32m    """Raised when the internal demo service fails to bind or start."""[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass IngestionTimeoutError(SmokeTestError):[m
+[32m+[m[32m    """Raised when telemetry does not become queryable in Heimdall within timeout."""[m
+[32m+[m
+ [m
+[31m-    time.sleep(1.5)  # let Heimdall's writer flush (1 s interval)[m
+[31m-    spans = httpx.get(f"{HEIMDALL}/api/spans", params={"limit": 1000}).json()["spans"][m
+[31m-    ours = [s for s in spans if s["service"] == SERVICE][m
+[32m+[m[32m# ---------------------------------------------------------------------------[m
+[32m+[m[32m# Bounded polling and verification utilities[m
+[32m+[m[32m# ---------------------------------------------------------------------------[m
+ [m
+[31m-    print(f"{len(ours)} spans from {SERVICE} in Heimdall")[m
+[31m-    for s in sorted(ours, key=lambda s: s["start_ms"])[:8]:[m
+[31m-        parent = (s["parent_span_id"] or "-")[:8][m
+[31m-        print(f"  {s['name']:<28} parent={parent:<8} status={s['status_code']:<5} "[m
+[31m-              f"http={s['http_status']}  {s['duration_ms']:.1f} ms")[m
+[32m+[m[32mdef wait_for_backend_health([m
+[32m+[m[32m    client: httpx.Client,[m
+[32m+[m[32m    heimdall_url: str,[m
+[32m+[m[32m    timeout: float = 5.0,[m
+[32m+[m[32m    poll_interval: float = 0.25,[m
+[32m+[m[32m) -> None:[m
+[32m+[m[32m    """Poll Heimdall /api/health until it responds with status: ok, or raise BackendUnreachableError."""[m
+[32m+[m[32m    deadline = time.monotonic() + timeout[m
+[32m+[m[32m    health_url = f"{heimdall_url.rstrip('/')}/api/health"[m
+[32m+[m[32m    last_err: Exception | str | None = None[m
+ [m
+[31m-    checks = {[m
+[32m+[m[32m    while time.monotonic() < deadline:[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            r = client.get(health_url, timeout=2.0)[m
+[32m+[m[32m            if r.status_code == 200:[m
+[32m+[m[32m                try:[m
+[32m+[m[32m                    data = r.json()[m
+[32m+[m[32m                    if data.get("status") == "ok":[m
+[32m+[m[32m                        return[m
+[32m+[m[32m                    last_err = f"Unexpected JSON response: {data}"[m
+[32m+[m[32m                except Exception as json_err:[m
+[32m+[m[32m                    last_err = f"Failed to parse JSON: {json_err}"[m
+[32m+[m[32m            else:[m
+[32m+[m[32m                last_err = f"HTTP {r.status_code} ({r.text})"[m
+[32m+[m[32m        except Exception as conn_err:[m
+[32m+[m[32m            last_err = conn_err[m
+[32m+[m[32m        time.sleep(poll_interval)[m
+[32m+[m
+[32m+[m[32m    raise BackendUnreachableError([m
+[32m+[m[32m        f"Backend is unreachable at {health_url} after {timeout:.1f}s. "[m
+[32m+[m[32m        f"Ensure Heimdall is running (e.g. 'cd backend && uv run uvicorn heimdall.api.main:app --port 4318'). "[m
+[32m+[m[32m        f"Last error: {last_err}"[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef wait_for_server_started([m
+[32m+[m[32m    server: Any,[m
+[32m+[m[32m    port: int,[m
+[32m+[m[32m    timeout: float = 5.0,[m
+[32m+[m[32m    poll_interval: float = 0.05,[m
+[32m+[m[32m) -> None:[m
+[32m+[m[32m    """Poll until uvicorn server.started is True, or raise DemoServiceStartupError."""[m
+[32m+[m[32m    deadline = time.monotonic() + timeout[m
+[32m+[m[32m    while time.monotonic() < deadline:[m
+[32m+[m[32m        if getattr(server, "started", False):[m
+[32m+[m[32m            return[m
+[32m+[m[32m        time.sleep(poll_interval)[m
+[32m+[m
+[32m+[m[32m    raise DemoServiceStartupError([m
+[32m+[m[32m        f"Demo service on port {port} failed to start within {timeout:.1f}s. "[m
+[32m+[m[32m        f"Check if port {port} is already in use by another process."[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef poll_for_spans([m
+[32m+[m[32m    client: httpx.Client,[m
+[32m+[m[32m    heimdall_url: str,[m
+[32m+[m[32m    service: str,[m
+[32m+[m[32m    min_spans: int = 1,[m
+[32m+[m[32m    min_traces: int = 1,[m
+[32m+[m[32m    run_start_ms: float | None = None,[m
+[32m+[m[32m    timeout: float = 10.0,[m
+[32m+[m[32m    poll_interval: float = 0.25,[m
+[32m+[m[32m) -> list[dict[str, Any]]:[m
+[32m+[m[32m    """Poll /api/spans until expected spans and traces for service are queryable."""[m
+[32m+[m[32m    deadline = time.monotonic() + timeout[m
+[32m+[m[32m    spans_url = f"{heimdall_url.rstrip('/')}/api/spans"[m
+[32m+[m[32m    last_spans: list[dict[str, Any]] = [][m
+[32m+[m
+[32m+[m[32m    while time.monotonic() < deadline:[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            r = client.get(spans_url, params={"limit": 1000}, timeout=2.0)[m
+[32m+[m[32m            if r.status_code == 200:[m
+[32m+[m[32m                raw_spans = r.json().get("spans", [])[m
+[32m+[m[32m                ours = [s for s in raw_spans if s.get("service") == service][m
+[32m+[m[32m                # If prior runs in the same database produced extra traces, filter to this run[m
+[32m+[m[32m                if run_start_ms is not None and len({s["trace_id"] for s in ours}) > min_traces:[m
+[32m+[m[32m                    recent = [s for s in ours if s.get("start_ms", 0) >= run_start_ms][m
+[32m+[m[32m                    if len(recent) >= min_spans and len({s["trace_id"] for s in recent}) >= min_traces:[m
+[32m+[m[32m                        return recent[m
+[32m+[m[32m                if len(ours) >= min_spans and len({s.get("trace_id") for s in ours}) >= min_traces:[m
+[32m+[m[32m                    return ours[m
+[32m+[m[32m                last_spans = ours[m
+[32m+[m[32m        except Exception:[m
+[32m+[m[32m            pass[m
+[32m+[m[32m        time.sleep(poll_interval)[m
+[32m+[m
+[32m+[m[32m    found_traces = len({s.get("trace_id") for s in last_spans})[m
+[32m+[m[32m    raise IngestionTimeoutError([m
+[32m+[m[32m        f"Telemetry did not become queryable at {spans_url} within {timeout:.1f}s. "[m
+[32m+[m[32m        f"Found {len(last_spans)} spans across {found_traces} traces for service '{service}' "[m
+[32m+[m[32m        f"(expected at least {min_spans} spans and {min_traces} traces). "[m
+[32m+[m[32m        f"Ingestion may have stalled or failed."[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef verify_smoke_checks(ours: list[dict[str, Any]], expected_requests: int) -> dict[str, bool]:[m
+[32m+[m[32m    """Evaluate standard smoke test assertions on retrieved spans."""[m
+[32m+[m[32m    return {[m
+         "spans arrived": len(ours) > 0,[m
+[31m-        "one trace per request": len({s["trace_id"] for s in ours}) == REQUESTS,[m
+[32m+[m[32m        "one trace per request": len({s["trace_id"] for s in ours}) == expected_requests,[m
+         "roots have no parent": any(s["parent_span_id"] is None for s in ours),[m
+[31m-        "children link to parents": any(s["parent_span_id"] for s in ours),[m
+[31m-        "http_status promoted": any(s["http_status"] == 200 for s in ours),[m
+[31m-        "errors recorded": any(s["status_code"] == "ERROR" for s in ours),[m
+[32m+[m[32m        "children link to parents": any(bool(s["parent_span_id"]) for s in ours),[m
+[32m+[m[32m        "http_status promoted": any(s.get("http_status") == 200 for s in ours),[m
+[32m+[m[32m        "errors recorded": any(s.get("status_code") == "ERROR" for s in ours),[m
+     }[m
+[31m-    # Logs: verified once the log search API exists (issue #5).[m
+[31m-    r = httpx.get(f"{HEIMDALL}/api/logs", params={"service": SERVICE, "limit": 1000})[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef check_logs([m
+[32m+[m[32m    client: httpx.Client,[m
+[32m+[m[32m    heimdall_url: str,[m
+[32m+[m[32m    service: str,[m
+[32m+[m[32m    expected_requests: int,[m
+[32m+[m[32m    timeout: float = 5.0,[m
+[32m+[m[32m    poll_interval: float = 0.25,[m
+[32m+[m[32m) -> tuple[str, dict[str, bool]]:[m
+[32m+[m[32m    """Check logs if /api/logs is implemented; otherwise return limitation message."""[m
+[32m+[m[32m    logs_url = f"{heimdall_url.rstrip('/')}/api/logs"[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        r = client.get(logs_url, params={"service": service, "limit": 1000}, timeout=2.0)[m
+[32m+[m[32m    except Exception as e:[m
+[32m+[m[32m        return f"skipped (connection error to {logs_url}: {e})", {}[m
+[32m+[m
+     if r.status_code == 404:[m
+[31m-        print("  (log checks skipped: GET /api/logs not built yet)")[m
+[32m+[m[32m        return "skipped: GET /api/logs not implemented yet (Issue #5)", {}[m
+[32m+[m
+[32m+[m[32m    if r.status_code != 200:[m
+[32m+[m[32m        return f"failed (status {r.status_code}: {r.text})", {"logs query successful": False}[m
+[32m+[m
+[32m+[m[32m    deadline = time.monotonic() + timeout[m
+[32m+[m[32m    expected_total = expected_requests + expected_requests // 3 + 1[m
+[32m+[m[32m    logs: list[dict[str, Any]] = [][m
+[32m+[m
+[32m+[m[32m    while time.monotonic() < deadline:[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            r = client.get(logs_url, params={"service": service, "limit": 1000}, timeout=2.0)[m
+[32m+[m[32m            if r.status_code == 200:[m
+[32m+[m[32m                logs = r.json().get("logs", [])[m
+[32m+[m[32m                if len(logs) >= expected_total:[m
+[32m+[m[32m                    break[m
+[32m+[m[32m        except Exception:[m
+[32m+[m[32m            pass[m
+[32m+[m[32m        time.sleep(poll_interval)[m
+[32m+[m
+[32m+[m[32m    log_checks = {[m
+[32m+[m[32m        "logs arrived": len(logs) == expected_total,[m
+[32m+[m[32m        "logs carry trace IDs": sum(l.get("trace_id") is not None for l in logs) == max(0, len(logs) - 1),[m
+[32m+[m[32m        "error logs recorded": sum(l.get("severity") == "ERROR" for l in logs) == expected_requests // 3,[m
+[32m+[m[32m    }[m
+[32m+[m[32m    return "completed", log_checks[m
+[32m+[m
+[32m+[m
+[32m+[m[32m# ---------------------------------------------------------------------------[m
+[32m+[m[32m# Demo service factory & orchestration[m
+[32m+[m[32m# ---------------------------------------------------------------------------[m
+[32m+[m
+[32m+[m[32mdef create_demo_service([m
+[32m+[m[32m    heimdall_url: str = HEIMDALL,[m
+[32m+[m[32m    service_name: str = SERVICE,[m
+[32m+[m[32m) -> tuple[Any, Any, Any, logging.Logger]:[m
+[32m+[m[32m    """Create and instrument the tiny demo service."""[m
+[32m+[m[32m    if not HAS_OTEL_SERVER:[m
+[32m+[m[32m        raise DemoServiceStartupError([m
+[32m+[m[32m            "Demo service dependencies (fastapi, uvicorn, opentelemetry-sdk, etc.) are missing. "[m
+[32m+[m[32m            "Run the smoke test with 'uv run demo/sdk_smoke.py' so PEP 723 inline script dependencies are installed."[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    resource = Resource.create({"service.name": service_name})[m
+[32m+[m
+[32m+[m[32m    provider = TracerProvider(resource=resource)[m
+[32m+[m[32m    provider.add_span_processor([m
+[32m+[m[32m        BatchSpanProcessor([m
+[32m+[m[32m            OTLPSpanExporter(endpoint=f"{heimdall_url.rstrip('/')}/v1/traces", compression=Compression.Gzip)[m
+[32m+[m[32m        )[m
+[32m+[m[32m    )[m
+[32m+[m[32m    trace.set_tracer_provider(provider)[m
+[32m+[m[32m    tracer = trace.get_tracer("sdk-smoke")[m
+[32m+[m
+[32m+[m[32m    log_provider = LoggerProvider(resource=resource)[m
+[32m+[m[32m    log_provider.add_log_record_processor([m
+[32m+[m[32m        BatchLogRecordProcessor([m
+[32m+[m[32m            OTLPLogExporter(endpoint=f"{heimdall_url.rstrip('/')}/v1/logs", compression=Compression.Gzip)[m
+[32m+[m[32m        )[m
+[32m+[m[32m    )[m
+[32m+[m[32m    set_logger_provider(log_provider)[m
+[32m+[m[32m    demo_log = logging.getLogger(f"sdk-smoke-{service_name}")[m
+[32m+[m[32m    demo_log.setLevel(logging.INFO)[m
+[32m+[m[32m    demo_log.addHandler(LoggingHandler(logger_provider=log_provider))[m
+[32m+[m
+[32m+[m[32m    app = FastAPI()[m
+[32m+[m
+[32m+[m[32m    @app.get("/order/{n}")[m
+[32m+[m[32m    def order(n: int):[m
+[32m+[m[32m        demo_log.info("creating order %d", n)[m
+[32m+[m[32m        with tracer.start_as_current_span("INSERT orders", kind=trace.SpanKind.CLIENT) as span:[m
+[32m+[m[32m            span.set_attribute("db.system", "postgresql")[m
+[32m+[m[32m            time.sleep(0.01)[m
+[32m+[m[32m        with tracer.start_as_current_span("chargeCard") as span:[m
+[32m+[m[32m            time.sleep(0.02)[m
+[32m+[m[32m            if n % 3 == 0:[m
+[32m+[m[32m                demo_log.error("card declined for order %d", n)[m
+[32m+[m[32m                span.set_status(trace.Status(trace.StatusCode.ERROR, "card declined"))[m
+[32m+[m[32m     

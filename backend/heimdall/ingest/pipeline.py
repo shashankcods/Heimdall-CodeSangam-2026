@@ -21,7 +21,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import duckdb
 import pyarrow as pa
@@ -55,6 +55,44 @@ class WriterStats:
     last_flush_ms: float = 0.0
 
 
+class Subscriber:
+    """Bounded subscriber queue for live telemetry broadcasting.
+
+    Overflow policy: drops the oldest queued record when the queue is full
+    to prevent slow consumers from exhausting memory or blocking ingest.
+    """
+
+    def __init__(self, maxsize: int = 1000):
+        self.queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=maxsize)
+        self.dropped: int = 0
+
+    def put(self, item: dict[str, Any] | None) -> None:
+        if item is None:
+            if self.queue.full():
+                try:
+                    self.queue.get_nowait()
+                    self.dropped += 1
+                except asyncio.QueueEmpty:
+                    pass
+            try:
+                self.queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+            return
+
+        if self.queue.full():
+            try:
+                self.queue.get_nowait()
+                self.dropped += 1
+            except asyncio.QueueEmpty:
+                pass
+
+        try:
+            self.queue.put_nowait(item)
+        except asyncio.QueueFull:
+            self.dropped += 1
+
+
 class BatchWriter:
     def __init__(
         self,
@@ -76,6 +114,7 @@ class BatchWriter:
         self.pending = 0  # records submitted but not yet taken off the queue
         self.stats = WriterStats()
         self._task: asyncio.Task | None = None
+        self._subscribers: set[Subscriber] = set()
 
     # --- endpoint side -----------------------------------------------------
 
@@ -92,6 +131,24 @@ class BatchWriter:
         self.pending += len(records)
         self.stats.received += len(records)
 
+    def subscribe(self, maxsize: int = 1000) -> Subscriber:
+        """Register a subscriber queue for live telemetry broadcast."""
+        sub = Subscriber(maxsize=maxsize)
+        self._subscribers.add(sub)
+        return sub
+
+    def unsubscribe(self, sub: Subscriber) -> None:
+        """Remove a subscriber queue."""
+        self._subscribers.discard(sub)
+
+    def _broadcast(self, records: list[Record]) -> None:
+        if not self._subscribers or not records:
+            return
+        for record in records:
+            item = record.to_dict() if hasattr(record, "to_dict") else record.to_row()
+            for sub in list(self._subscribers):
+                sub.put(item)
+
     # --- lifecycle ---------------------------------------------------------
 
     def start(self) -> None:
@@ -104,6 +161,9 @@ class BatchWriter:
         await self.queue.put(None)  # sentinel: "no more records"
         await self._task
         self._task = None
+        for sub in list(self._subscribers):
+            sub.put(None)
+        self._subscribers.clear()
 
     # --- writer side -------------------------------------------------------
 
@@ -138,6 +198,7 @@ class BatchWriter:
             # DuckDB calls block, so run them in a worker thread.
             await asyncio.to_thread(self._write, [r.to_row() for r in records])
             self.stats.written += len(records)
+            self._broadcast(records)
         except Exception:
             self.stats.failed += len(records)
             log.exception("failed to write %d records to %s", len(records), self.table)

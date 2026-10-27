@@ -52,3 +52,16 @@ class LogRecord:
         row = asdict(self)
         row["attributes"] = json.dumps(self.attributes)
         return row
+
+    def to_dict(self) -> dict[str, Any]:
+        """User-facing dictionary matching /api/logs representation."""
+        return {
+            "timestamp_ms": self.timestamp / 1e6,
+            "timestamp": self.timestamp / 1e6,
+            "service": self.service,
+            "severity": self.severity,
+            "body": self.body,
+            "trace_id": self.trace_id,
+            "span_id": self.span_id,
+            "attributes": self.attributes,
+        }

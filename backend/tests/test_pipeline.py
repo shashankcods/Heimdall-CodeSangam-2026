@@ -4,7 +4,7 @@ import time
 import pytest
 
 from heimdall.ingest.models import Span
-from heimdall.ingest.pipeline import BatchWriter, QueueFull
+from heimdall.ingest.pipeline import BatchWriter, QueueFull, Subscriber
 from heimdall.store.schema import connect
 
 
@@ -33,6 +33,15 @@ async def wait_for_rows(conn, expected, timeout=2.0):
     raise AssertionError(f"expected {expected} rows, got {count(conn)}")
 
 
+async def wait_for_flush(writer, expected=1, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if writer.stats.flushes >= expected:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"expected {expected} flushes, got {writer.stats.flushes}")
+
+
 @pytest.fixture
 def conn(tmp_path):
     return connect(str(tmp_path / "test.duckdb"))
@@ -44,6 +53,7 @@ def test_flushes_when_batch_size_reached(conn):
         writer.start()
         writer.submit(make_spans(3))
         await wait_for_rows(conn, 3)  # long before the 60 s interval
+        await wait_for_flush(writer, 1)
         assert writer.stats.flushes == 1
         await writer.close()
 
@@ -155,5 +165,71 @@ def test_settings_from_env(conn, monkeypatch):
     async def scenario():
         writer = BatchWriter(conn, "spans")
         assert (writer.max_pending, writer.batch_size, writer.flush_interval) == (42, 7, 0.25)
+
+    asyncio.run(scenario())
+
+
+def test_batch_writer_broadcasts_after_successful_commit(conn):
+    async def scenario():
+        writer = BatchWriter(conn, "spans", batch_size=2, flush_interval=60)
+        writer.start()
+        sub = writer.subscribe(maxsize=10)
+
+        writer.submit(make_spans(2))
+        await wait_for_rows(conn, 2)
+        await wait_for_flush(writer, 1)
+
+        item1 = sub.queue.get_nowait()
+        item2 = sub.queue.get_nowait()
+        assert item1 is not None and item1["span_id"] == "0000000000000000"
+        assert item2 is not None and item2["span_id"] == "0000000000000001"
+        assert sub.queue.empty()
+
+        writer.unsubscribe(sub)
+        await writer.close()
+
+    asyncio.run(scenario())
+
+
+def test_batch_writer_does_not_broadcast_on_failed_commit(conn):
+    async def scenario():
+        writer = BatchWriter(conn, "spans", batch_size=2, flush_interval=60)
+        writer.start()
+        sub = writer.subscribe(maxsize=10)
+
+        bad = make_spans(2, name=None)  # NOT NULL violation
+        writer.submit(bad)
+        await asyncio.sleep(0.1)
+
+        assert writer.stats.failed == 2
+        assert sub.queue.empty()  # Nothing broadcasted on failure
+
+        writer.unsubscribe(sub)
+        await writer.close()
+
+    asyncio.run(scenario())
+
+
+def test_batch_writer_subscriber_overflow_drops_oldest():
+    sub = Subscriber(maxsize=2)
+    sub.put({"msg": "first"})
+    sub.put({"msg": "second"})
+    assert not sub.queue.full() or sub.queue.qsize() == 2
+    # Overflow: 3rd item causes 'first' to be dropped
+    sub.put({"msg": "third"})
+    assert sub.dropped == 1
+    assert sub.queue.get_nowait() == {"msg": "second"}
+    assert sub.queue.get_nowait() == {"msg": "third"}
+
+
+def test_batch_writer_close_notifies_subscribers_with_sentinel(conn):
+    async def scenario():
+        writer = BatchWriter(conn, "spans", batch_size=10, flush_interval=60)
+        writer.start()
+        sub = writer.subscribe(maxsize=10)
+
+        await writer.close()
+        sentinel = sub.queue.get_nowait()
+        assert sentinel is None
 
     asyncio.run(scenario())
