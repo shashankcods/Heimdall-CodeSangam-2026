@@ -126,6 +126,8 @@ body {
 
 .filters select,
 .filters input[type='number'],
+.filters input[type='text'],
+.filters input[type='search'],
 .filters button {
   font: inherit;
   font-size: 14px;
@@ -395,4 +397,88 @@ body {
 .trace-table a {
   color: inherit;
   text-decoration: none;
+}
+
+/* Logs page */
+.filters label.grow {
+  flex: 1;
+  min-width: 220px;
+}
+
+.active-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.active-filter a {
+  color: var(--accent);
+}
+
+.active-filter button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.log-table .log-body {
+  white-space: normal;
+  min-width: 240px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
+.trace-table a.trace-link {
+  color: var(--accent);
+}
+
+.trace-table a.trace-link:hover {
+  text-decoration: underline;
+}
+
+.log-expanded td {
+  background: var(--sidebar-bg);
+  white-space: normal;
+}
+
+.kv-list {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.kv-list > div {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 12px;
+}
+
+.kv-list dt {
+  color: var(--muted);
+}
+
+.kv-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.sev-trace,
+.sev-debug,
+.sev-none { background: #eaeef2; color: var(--muted); }
+.sev-info { background: #ddf4ff; color: var(--accent); }
+.sev-warn { background: #fff8c5; color: var(--checking); }
+.sev-error,
+.sev-fatal { background: #ffebe9; color: var(--down); }
+
+.trace-meta a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.trace-meta a:hover {
+  text-decoration: underline;
 }

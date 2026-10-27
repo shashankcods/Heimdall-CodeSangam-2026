@@ -29,7 +29,7 @@ export default function TraceDetailPage() {
         setSelectedSpanId((firstError ?? result.spans[0])?.span_id ?? null)
       })
       .catch((err: Error) => {
-        if (!ignore) setError(err.message.includes('404') ? 'Trace not found.' : err.message)
+        if (!ignore) setError(err.message.startsWith('404') ? 'Trace not found.' : err.message)
       })
     return () => {
       ignore = true
@@ -71,6 +71,7 @@ export default function TraceDetailPage() {
             <span>{trace.spans.length} spans</span>
             {errorCount > 0 && <span className="error-text">{errorCount} errors</span>}
             <span className="mono">{trace.trace_id}</span>
+            <Link to={`/logs?trace_id=${trace.trace_id}`}>View logs →</Link>
           </p>
 
           <Waterfall
