@@ -14,7 +14,7 @@ from typing import Optional
 
 import httpx
 
-GATEWAY_URL = "http://localhost:8001"
+GATEWAY_URL = "http://127.0.0.1:8001"
 
 
 class LoadGenerator:

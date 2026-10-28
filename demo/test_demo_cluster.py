@@ -32,10 +32,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-HEIMDALL = os.environ.get("HEIMDALL_URL", "http://localhost:4318")
+HEIMDALL = os.environ.get("HEIMDALL_URL", "http://127.0.0.1:4318")
 GATEWAY_URL = "http://127.0.0.1:8001"
 ORDER_URL = "http://127.0.0.1:8002"
 PAYMENT_URL = "http://127.0.0.1:8003"
+INVENTORY_URL = "http://127.0.0.1:8004"
 
 
 @pytest.fixture(scope="module")
@@ -47,18 +48,23 @@ def demo_cluster():
     except Exception as exc:
         pytest.skip(f"Heimdall backend not reachable at {HEIMDALL}: {exc}")
 
-    # 2. Launch demo services in separate subprocesses via uv run
+    # 2. Launch demo services in separate subprocesses
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_ROOT)
+    env["HEIMDALL_URL"] = HEIMDALL
+    node_dir = REPO_ROOT / "demo" / "node_service"
+
     services = [
         subprocess.Popen(["uv", "run", str(REPO_ROOT / "demo" / "services" / "payment.py")], env=env),
+        subprocess.Popen(["node", "--require", "./tracer.js", "server.js"], cwd=str(node_dir), env=env),
         subprocess.Popen(["uv", "run", str(REPO_ROOT / "demo" / "services" / "order.py")], env=env),
         subprocess.Popen(["uv", "run", str(REPO_ROOT / "demo" / "services" / "gateway.py")], env=env),
     ]
 
-    # Wait for all 3 to be healthy
+    # Wait for all 4 to be healthy
     for url, name in [
         (PAYMENT_URL, "payment-service"),
+        (INVENTORY_URL, "inventory-service"),
         (ORDER_URL, "order-service"),
         (GATEWAY_URL, "gateway"),
     ]:
@@ -87,8 +93,9 @@ def demo_cluster():
 
 
 def test_demo_happy_path(demo_cluster):
-    # Ensure payment service has no faults
+    # Ensure payment and inventory services have no faults
     httpx.post(f"{PAYMENT_URL}/fault/reset", timeout=2.0)
+    httpx.post(f"{INVENTORY_URL}/fault/reset", timeout=2.0)
 
     # Send order through gateway
     order_res = httpx.post(
@@ -99,6 +106,8 @@ def test_demo_happy_path(demo_cluster):
     assert order_res.status_code == 200
     order_data = order_res.json()
     assert order_data.get("status") == "confirmed"
+    assert "inventory" in order_data
+    assert "payment" in order_data
 
     # Wait for Heimdall DuckDB flush (1s timeout)
     time.sleep(1.4)
@@ -121,6 +130,7 @@ def test_demo_happy_path(demo_cluster):
     services_in_trace = {s["service"] for s in spans}
     assert "gateway" in services_in_trace
     assert "order-service" in services_in_trace
+    assert "inventory-service" in services_in_trace
     assert "payment-service" in services_in_trace
 
     # Check database span
