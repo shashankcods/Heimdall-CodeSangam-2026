@@ -20,7 +20,6 @@ from heimdall.ingest.broadcast import LogBroadcaster, TooManyViewers
 from heimdall.ingest.decoder import InvalidPayload, decode_logs, decode_traces
 from heimdall.ingest.pipeline import BatchWriter, QueueFull
 from heimdall.queries.logs import InvalidSearch, LogFilter, log_to_api, search_logs
-from heimdall.queries.spans import recent_spans
 from heimdall.queries.topology import service_map
 from heimdall.queries.traces import get_trace, list_services, list_traces
 from heimdall.store.schema import connect
@@ -28,7 +27,6 @@ from heimdall.store.schema import connect
 PROTOBUF = "application/x-protobuf"
 EMPTY_TRACE_RESPONSE = ExportTraceServiceResponse().SerializeToString()
 EMPTY_LOGS_RESPONSE = ExportLogsServiceResponse().SerializeToString()
-MAX_SPANS_LIMIT = 1000
 MAX_TRACES_LIMIT = 500
 MAX_LOGS_LIMIT = 1000
 SSE_PING_SECONDS = 15
@@ -239,12 +237,3 @@ async def logs_stream(
             broadcaster.unsubscribe(sub)  # runs when the browser disconnects
 
     return EventSourceResponse(events(), ping=SSE_PING_SECONDS)
-
-
-@app.get("/api/spans")
-def debug_spans(
-    limit: int = Query(100, ge=1),
-    cur: duckdb.DuckDBPyConnection = Depends(get_cursor),
-) -> dict:
-    """Debug only (skeleton slice). Replaced by /api/traces in step 2."""
-    return {"spans": recent_spans(cur, min(limit, MAX_SPANS_LIMIT))}

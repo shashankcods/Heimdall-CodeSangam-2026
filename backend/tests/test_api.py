@@ -10,6 +10,7 @@ from heimdall.ingest.pipeline import QueueFull
 from tests.test_decoder import CHILD_ID, ROOT_ID, kv, otlp_span, request_bytes
 
 PROTOBUF = {"Content-Type": "application/x-protobuf"}
+EPOCH_WINDOW = {"from_ms": 0, "to_ms": 10_000}  # otlp_span() defaults to times near 1970
 
 
 @pytest.fixture
@@ -21,9 +22,11 @@ def client(tmp_path, monkeypatch):
 
 
 def wait_for_spans(client, expected, timeout=2.0):
+    """All stored spans, read back through the trace API."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        spans = client.get("/api/spans").json()["spans"]
+        traces = client.get("/api/traces", params=EPOCH_WINDOW).json()["traces"]
+        spans = [s for t in traces for s in client.get(f"/api/traces/{t['trace_id']}").json()["spans"]]
         if len(spans) >= expected:
             return spans
         time.sleep(0.02)
@@ -41,7 +44,7 @@ def test_ingest_returns_empty_protobuf_response(client):
     ExportTraceServiceResponse().ParseFromString(r.content)  # must be valid protobuf
 
 
-def test_ingested_spans_show_up_in_debug_endpoint(client):
+def test_ingested_spans_can_be_read_back(client):
     body = request_bytes({
         "gateway": [otlp_span(attrs=[kv("http.response.status_code", 500)], start=2_000_000, end=5_000_000)],
         "order-service": [otlp_span(span_id=CHILD_ID, parent=ROOT_ID, name="createOrder")],
@@ -81,10 +84,5 @@ def test_full_queue_returns_429_with_retry_after(client, monkeypatch):
     assert r.headers["retry-after"] == "1"
 
 
-def test_spans_limit_is_capped(client):
-    spans = [otlp_span(span_id=i.to_bytes(8, "big")) for i in range(1, 6)]
-    client.post("/v1/traces", content=request_bytes({"svc": spans}), headers=PROTOBUF)
-    wait_for_spans(client, 5)
-    assert len(client.get("/api/spans?limit=2").json()["spans"]) == 2
-    assert len(client.get("/api/spans?limit=999999").json()["spans"]) == 5  # capped, not an error
-    assert client.get("/api/spans?limit=0").status_code == 422
+def test_debug_spans_endpoint_is_gone(client):
+    assert client.get("/api/spans").status_code == 404

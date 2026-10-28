@@ -93,6 +93,20 @@ def check_heimdall_health() -> bool:
         return False
 
 
+def fetch_service_spans() -> list[dict]:
+    """Every span from this service, read back through the trace API.
+
+    Lists this service's traces, then fetches each one's spans (adding trace_id,
+    which the per-trace span objects don't repeat).
+    """
+    r = httpx.get(f"{HEIMDALL}/api/traces", params={"service": SERVICE, "limit": 500}, timeout=2.0)
+    spans = []
+    for t in r.json()["traces"]:
+        detail = httpx.get(f"{HEIMDALL}/api/traces/{t['trace_id']}", timeout=2.0).json()
+        spans += [{**s, "trace_id": t["trace_id"]} for s in detail["spans"] if s["service"] == SERVICE]
+    return spans
+
+
 def main() -> int:
     print(f"Connecting to Heimdall backend at {HEIMDALL}...")
     if not check_heimdall_health():
@@ -120,13 +134,10 @@ def main() -> int:
     while time.time() < deadline:
         time.sleep(0.3)
         try:
-            r = httpx.get(f"{HEIMDALL}/api/spans", params={"limit": 1000}, timeout=2.0)
-            if r.status_code == 200:
-                spans = r.json().get("spans", [])
-                ours = [s for s in spans if s["service"] == SERVICE]
-                # Each request creates: root handler span + INSERT orders + chargeCard = 3 spans
-                if len(ours) >= REQUESTS * 2:
-                    break
+            ours = fetch_service_spans()
+            # Each request creates: root handler span + INSERT orders + chargeCard = 3 spans
+            if len(ours) >= REQUESTS * 2:
+                break
         except Exception:
             pass
 
