@@ -1,0 +1,17 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy package manifests first for optimal layer caching
+COPY demo/node_service/package*.json ./
+RUN npm ci --omit=dev || npm install --omit=dev
+
+# Copy service source files
+COPY demo/node_service/ ./
+
+ENV PORT=8004
+ENV NODE_ENV=production
+
+EXPOSE 8004
+
+CMD ["node", "--require", "./tracer.js", "server.js"]
