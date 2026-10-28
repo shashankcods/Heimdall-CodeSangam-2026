@@ -1,0 +1,147 @@
+services:
+  heimdall:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: heimdall
+    ports:
+      - "4318:4318"
+    environment:
+      - HEIMDALL_DB_PATH=/data/heimdall.duckdb
+      - HEIMDALL_MAX_PENDING=100000
+      - HEIMDALL_BATCH_SIZE=500
+      - HEIMDALL_FLUSH_INTERVAL=1.0
+      - HEIMDALL_MAX_LIVE_VIEWERS=50
+    volumes:
+      - heimdall-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4318/api/services')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - heimdall-net
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: demo/Dockerfile.python
+    container_name: heimdall-demo-payment
+    command: ["uvicorn", "demo.services.payment:app", "--host", "0.0.0.0", "--port", "8003"]
+    ports:
+      - "8003:8003"
+    environment:
+      - PAYMENT_PORT=8003
+      - HEIMDALL_URL=http://heimdall:4318
+    depends_on:
+      heimdall:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    networks:
+      - heimdall-net
+
+  inventory-service:
+    build:
+      context: .
+      dockerfile: demo/Dockerfile.node
+    container_name: heimdall-demo-inventory
+    ports:
+      - "8004:8004"
+    environment:
+      - PORT=8004
+      - HEIMDALL_URL=http://heimdall:4318
+    depends_on:
+      heimdall:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8004/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    networks:
+      - heimdall-net
+
+  order-service:
+    build:
+      context: .
+      dockerfile: demo/Dockerfile.python
+    container_name: heimdall-demo-order
+    command: ["uvicorn", "demo.services.order:app", "--host", "0.0.0.0", "--port", "8002"]
+    ports:
+      - "8002:8002"
+    environment:
+      - ORDER_PORT=8002
+      - PAYMENT_URL=http://payment-service:8003
+      - INVENTORY_URL=http://inventory-service:8004
+      - HEIMDALL_URL=http://heimdall:4318
+    depends_on:
+      heimdall:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      inventory-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    networks:
+      - heimdall-net
+
+  gateway:
+    build:
+      context: .
+      dockerfile: demo/Dockerfile.python
+    container_name: heimdall-demo-gateway
+    command: ["uvicorn", "demo.services.gateway:app", "--host", "0.0.0.0", "--port", "8001"]
+    ports:
+      - "8001:8001"
+    environment:
+      - GATEWAY_PORT=8001
+      - ORDER_URL=http://order-service:8002
+      - HEIMDALL_URL=http://heimdall:4318
+    depends_on:
+      heimdall:
+        condition: service_healthy
+      order-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    networks:
+      - heimdall-net
+
+  load-generator:
+    build:
+      context: .
+      dockerfile: demo/Dockerfile.python
+    container_name: heimdall-demo-load-generator
+    command: ["python", "-m", "demo.load_generator", "--url", "http://gateway:8001/order", "--rate", "2.0"]
+    environment:
+      - GATEWAY_URL=http://gateway:8001
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - heimdall-net
+
+volumes:
+  heimdall-data:
+    name: heimdall-data
+
+networks:
+  heimdall-net:
+    name: heimdall-net
+    driver: bridge
