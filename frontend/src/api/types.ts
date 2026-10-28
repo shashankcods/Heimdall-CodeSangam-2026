@@ -18,6 +18,8 @@ export interface TraceFilters {
   service: string | null
   errorsOnly: boolean
   minDurationMs: number | null
+  // How far back to look, in ms. null = the backend default (last hour).
+  lookbackMs: number | null
 }
 
 export interface Span {

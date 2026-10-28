@@ -8,6 +8,9 @@ import { formatTimeMs } from '../lib/format'
 import { useDebouncedValue } from '../lib/useDebouncedValue'
 import { usePageTitle } from '../lib/usePageTitle'
 import { EmptyState, ErrorState, LoadingState } from '../components/StatusMessage'
+import SidebarPanel from '../components/SidebarPanel'
+import LogVolume from '../components/LogVolume'
+import { serviceColor } from '../lib/serviceColor'
 
 const LIMIT = 100
 // Live tail keeps adding rows; drop the oldest past this so the page stays fast.
@@ -55,6 +58,9 @@ export default function LogsPage() {
   // Logs that arrived over live tail, so only those rows get the highlight.
   // A ref, not state: changing it shouldn't cause a re-render by itself.
   const arrivedLive = useRef(new WeakSet<LogEntry>())
+  // When each live log arrived (last 10 s), for the logs-per-second readout.
+  const arrivals = useRef<number[]>([])
+  const [liveRate, setLiveRate] = useState(0)
 
   const debouncedQuery = useDebouncedValue(query)
   const debouncedTags = useDebouncedValue(tagsText)
@@ -111,6 +117,7 @@ export default function LogsPage() {
       filters,
       (log) => {
         arrivedLive.current.add(log)
+        arrivals.current.push(Date.now())
         setLogs((prev) => {
           const key = logKey(log)
           if (prev.some((p) => logKey(p) === key)) return prev
@@ -126,27 +133,66 @@ export default function LogsPage() {
     return close
   }, [live, filters])
 
+  useEffect(() => {
+    if (!live) return
+    const timer = setInterval(() => {
+      const cutoff = Date.now() - 10_000
+      arrivals.current = arrivals.current.filter((t) => t > cutoff)
+      setLiveRate(arrivals.current.length / 10)
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [live])
+
   return (
     <section className="page">
-      <h1>Logs</h1>
+      <div className="page-header">
+        <div>
+          <h1>Logs</h1>
+          <p className="muted">Search everything your services wrote, or watch it live.</p>
+        </div>
+        <div className="page-actions">
+          {live && (
+            <span className={`live-status live-${liveStatus}`} role="status">
+              {liveStatus === 'live'
+                ? `Live · ${liveRate.toFixed(liveRate < 10 ? 1 : 0)} logs/s`
+                : LIVE_LABELS[liveStatus]}
+            </span>
+          )}
+          <button
+            className={live ? 'button live-toggle on' : 'button live-toggle'}
+            aria-pressed={live}
+            onClick={() => setLive(!live)}
+          >
+            <span className="live-dot" aria-hidden="true" />
+            {live ? 'Live' : 'Go live'}
+          </button>
+          <button className="button" onClick={refresh}>Refresh</button>
+        </div>
+      </div>
 
-      <div className="filters">
-        <label className="grow">
+      <SidebarPanel title="Search logs">
+        <label className="field">
           Search
-          <input
-            type="search"
-            placeholder={regex ? 'regex, e.g. card (declined|failed)' : 'text in the message'}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
+          <span className="search-box">
+            <input
+              type="search"
+              placeholder={regex ? 'card (declined|failed)' : 'text in the message'}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            <button
+              className={regex ? 'regex-toggle on' : 'regex-toggle'}
+              aria-pressed={regex}
+              aria-label="Regex search"
+              title="Regex search"
+              onClick={() => setRegex(!regex)}
+            >
+              .*
+            </button>
+          </span>
         </label>
 
-        <label className="checkbox">
-          <input type="checkbox" checked={regex} onChange={(e) => setRegex(e.target.checked)} />
-          Regex
-        </label>
-
-        <label>
+        <label className="field">
           Service
           <select value={service ?? ''} onChange={(e) => setService(e.target.value || null)}>
             <option value="">All services</option>
@@ -158,7 +204,7 @@ export default function LogsPage() {
           </select>
         </label>
 
-        <label>
+        <label className="field">
           Min severity
           <select
             value={severity ?? ''}
@@ -173,7 +219,7 @@ export default function LogsPage() {
           </select>
         </label>
 
-        <label>
+        <label className="field">
           Tags
           <input
             type="text"
@@ -182,23 +228,7 @@ export default function LogsPage() {
             onChange={(e) => setTagsText(e.target.value)}
           />
         </label>
-
-        <button onClick={refresh}>Refresh</button>
-        <button
-          className={live ? 'live-toggle on' : 'live-toggle'}
-          aria-pressed={live}
-          onClick={() => setLive(!live)}
-        >
-          <span className="live-dot" aria-hidden="true" />
-          {live ? 'Live' : 'Go live'}
-        </button>
-      </div>
-
-      {live && (
-        <p className={`live-status live-${liveStatus}`} role="status">
-          {LIVE_LABELS[liveStatus]}
-        </p>
-      )}
+      </SidebarPanel>
 
       {traceId && (
         <p className="active-filter">
@@ -208,6 +238,8 @@ export default function LogsPage() {
           </button>
         </p>
       )}
+
+      {!error && <LogVolume logs={logs} />}
 
       {error ? (
         <ErrorState
@@ -223,13 +255,13 @@ export default function LogsPage() {
           <EmptyState title="No logs match these filters">Try a shorter search or remove a filter.</EmptyState>
         ) : (
           <EmptyState title="No logs in the last hour">
-            Send some with <code>uv run demo/sdk_smoke.py</code>, then click Refresh.
+            Send some with <code>uv run demo/run_demo.py</code>, then click Refresh.
           </EmptyState>
         )
       ) : null}
 
       {!error && logs.length > 0 && (
-        <div className={loading ? 'table-scroll is-refreshing' : 'table-scroll'}>
+        <div className={loading ? 'card table-scroll is-refreshing' : 'card table-scroll'}>
           <table className="trace-table log-table">
             <thead>
               <tr>
@@ -257,7 +289,12 @@ export default function LogsPage() {
                           {log.severity ?? '—'}
                         </span>
                       </td>
-                      <td>{log.service}</td>
+                      <td>
+                        <span className="service-chip">
+                          <span className="service-dot" style={{ background: serviceColor(log.service) }} />
+                          {log.service}
+                        </span>
+                      </td>
                       <td className="log-body">{log.body ?? '—'}</td>
                       <td className="mono">
                         {log.trace_id ? (

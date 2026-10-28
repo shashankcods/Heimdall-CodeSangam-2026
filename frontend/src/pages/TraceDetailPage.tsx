@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router'
-import { fetchTrace } from '../api/client'
-import type { TraceDetail } from '../api/types'
-import { buildSpanTree, flattenTree } from '../lib/spanTree'
+import { fetchLogs, fetchTrace } from '../api/client'
+import type { LogEntry, TraceDetail } from '../api/types'
+import { buildSpanTree, deepestErrorSpan, flattenTree } from '../lib/spanTree'
 import { formatDuration, formatTime } from '../lib/format'
 import { usePageTitle } from '../lib/usePageTitle'
+import { serviceColor } from '../lib/serviceColor'
 import Waterfall from '../components/Waterfall'
 import SpanDetails from '../components/SpanDetails'
 import { ErrorState, LoadingState } from '../components/StatusMessage'
@@ -20,6 +21,9 @@ export default function TraceDetailPage() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null)
   const [reloadCount, setReloadCount] = useState(0)
+  // All logs of this trace; each span's share is picked out below.
+  const [traceLogs, setTraceLogs] = useState<LogEntry[] | null>(null)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     if (!traceId) return
@@ -32,9 +36,9 @@ export default function TraceDetailPage() {
       .then((result) => {
         if (ignore) return
         setTrace(result)
-        // Start with the first error span selected, else the root.
-        const firstError = result.spans.find((s) => s.status_code === 'ERROR')
-        setSelectedSpanId((firstError ?? result.spans[0])?.span_id ?? null)
+        // Start on the span that actually broke, else the root.
+        const cause = deepestErrorSpan(buildSpanTree(result.spans))
+        setSelectedSpanId((cause ?? result.spans[0])?.span_id ?? null)
       })
       .catch((err: Error) => {
         if (!ignore) setError(err.message.startsWith('404') ? 'Trace not found.' : err.message)
@@ -43,6 +47,36 @@ export default function TraceDetailPage() {
       ignore = true
     }
   }, [traceId, reloadCount])
+
+  useEffect(() => {
+    if (!traceId) return
+    let ignore = false
+    setTraceLogs(null)
+    fetchLogs({ q: '', regex: false, service: null, severity: null, traceId, tags: [] })
+      .then((logs) => {
+        if (!ignore) setTraceLogs(logs)
+      })
+      .catch(() => {
+        // Logs are extra context here; without them the waterfall still works.
+        if (!ignore) setTraceLogs([])
+      })
+    return () => {
+      ignore = true
+    }
+  }, [traceId])
+
+  const copyTraceId = () => {
+    if (!trace) return
+    navigator.clipboard
+      .writeText(trace.trace_id)
+      .then(() => {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      })
+      .catch(() => {
+        // Clipboard blocked (e.g. page not focused): the ID is still visible to select by hand.
+      })
+  }
 
   // Rebuild the tree only when the trace changes, not on every click.
   const tree = useMemo(() => (trace ? buildSpanTree(trace.spans) : []), [trace])
@@ -57,8 +91,18 @@ export default function TraceDetailPage() {
   }
 
   const selectedSpan = trace?.spans.find((s) => s.span_id === selectedSpanId) ?? null
+  // Oldest first, so they read like a story.
+  const spanLogs =
+    traceLogs === null
+      ? null
+      : traceLogs
+          .filter((l) => l.span_id === selectedSpanId)
+          .sort((a, b) => a.timestamp_ms - b.timestamp_ms)
   const root = tree[0]?.span
   const errorCount = trace?.spans.filter((s) => s.status_code === 'ERROR').length ?? 0
+  const cause = useMemo(() => deepestErrorSpan(tree), [tree])
+  // Each service once, in the order it first appears: the key for the colored dots.
+  const services = useMemo(() => [...new Set(trace?.spans.map((s) => s.service) ?? [])], [trace])
   usePageTitle(root?.name ?? 'Trace')
 
   return (
@@ -79,27 +123,78 @@ export default function TraceDetailPage() {
 
       {trace && (
         <>
-          <h1>{root?.name ?? 'Trace'}</h1>
-          <p className="trace-meta">
-            <span>{root?.service}</span>
-            <span>{formatTime(trace.start_ms)}</span>
-            <span>{formatDuration(trace.duration_ms)}</span>
-            <span>{trace.spans.length} spans</span>
-            {errorCount > 0 && <span className="error-text">{errorCount} errors</span>}
-            <span className="mono">{trace.trace_id}</span>
-            <Link to={`/logs?trace_id=${trace.trace_id}`}>View logs →</Link>
-          </p>
+          <div className="page-header">
+            <div>
+              <div className="title-row">
+                <h1 className="mono">{root?.name ?? 'Trace'}</h1>
+                {errorCount > 0 ? (
+                  <span className="badge badge-error">
+                    Error{root?.http_status != null && ` · ${root.http_status}`}
+                  </span>
+                ) : (
+                  <span className="badge badge-ok">OK</span>
+                )}
+              </div>
+              <p className="trace-meta">
+                <span>{root?.service}</span>
+                <span>{formatTime(trace.start_ms)}</span>
+                <span className="strong">{formatDuration(trace.duration_ms)}</span>
+                <span>{trace.spans.length} spans</span>
+                {errorCount > 0 && <span className="error-text strong">{errorCount} errors</span>}
+                <span className="mono">{trace.trace_id}</span>
+              </p>
+            </div>
+            <div className="page-actions">
+              <button className="button" onClick={copyTraceId}>
+                {copied ? 'Copied ✓' : 'Copy trace ID'}
+              </button>
+              <Link className="button primary" to={`/logs?trace_id=${trace.trace_id}`}>
+                View logs →
+              </Link>
+            </div>
+          </div>
 
-          <Waterfall
-            trace={trace}
-            rows={rows}
-            collapsed={collapsed}
-            selectedSpanId={selectedSpanId}
-            onToggle={toggle}
-            onSelect={setSelectedSpanId}
-          />
+          {cause && (
+            <div className="cause-box" role="note">
+              <div>
+                <strong>
+                  Deepest failing span: <span className="mono">{cause.name}</span> on {cause.service}
+                </strong>
+                <span>
+                  {cause.http_status !== null && `${cause.http_status} after `}
+                  {formatDuration(cause.duration_ms)}
+                  {cause.status_msg && ` · ${cause.status_msg}`}
+                </span>
+              </div>
+              {cause.span_id !== selectedSpanId && (
+                <button className="button" onClick={() => setSelectedSpanId(cause.span_id)}>
+                  Show span
+                </button>
+              )}
+            </div>
+          )}
 
-          {selectedSpan && <SpanDetails span={selectedSpan} />}
+          <div className="trace-columns">
+            <div className="trace-main">
+              <div className="service-legend" aria-label="Services in this trace">
+                {services.map((name) => (
+                  <span key={name} className="service-chip">
+                    <span className="service-dot" style={{ background: serviceColor(name) }} />
+                    {name}
+                  </span>
+                ))}
+              </div>
+              <Waterfall
+                trace={trace}
+                rows={rows}
+                collapsed={collapsed}
+                selectedSpanId={selectedSpanId}
+                onToggle={toggle}
+                onSelect={setSelectedSpanId}
+              />
+            </div>
+            {selectedSpan && <SpanDetails span={selectedSpan} logs={spanLogs} traceId={trace.trace_id} />}
+          </div>
         </>
       )}
     </section>

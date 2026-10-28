@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react'
 import type { Span, TraceDetail } from '../api/types'
 import type { SpanRow } from '../lib/spanTree'
 import { formatDuration } from '../lib/format'
+import { serviceColor } from '../lib/serviceColor'
 
 const INDENT_PX = 16
 const TICKS = [0, 0.25, 0.5, 0.75, 1]
@@ -72,19 +73,26 @@ export default function Waterfall({
                 ) : (
                   <span className="wf-toggle-spacer" />
                 )}
-                <span className={isError ? 'wf-label error-text' : 'wf-label'}>{span.name}</span>
+                <span
+                  className="service-dot"
+                  style={{ background: serviceColor(span.service) }}
+                  title={span.service}
+                />
+                <span className={isError ? 'wf-label error-text' : 'wf-label'} title={`${span.name} · ${span.service}`}>
+                  {span.name}
+                </span>
                 {span.http_status !== null && (
                   <span className={span.http_status >= 500 ? 'badge badge-error' : 'badge badge-ok'}>
                     {span.http_status}
                   </span>
                 )}
-                <span className="wf-service">{span.service}</span>
               </div>
               <div className="num">{formatDuration(span.duration_ms)}</div>
               <div className="wf-timeline">
                 <div
                   className={isError ? 'wf-bar wf-bar-error' : 'wf-bar'}
-                  style={barStyle(span, trace)}
+                  // Each service keeps its color; errors are always red (from the CSS class).
+                  style={isError ? barStyle(span, trace) : { ...barStyle(span, trace), background: serviceColor(span.service) }}
                 />
               </div>
             </div>

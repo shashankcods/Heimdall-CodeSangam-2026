@@ -34,11 +34,15 @@ async function getJson<T>(path: string): Promise<T> {
   return res.json() as Promise<T>
 }
 
+// The trace list asks for this many (backend max 500): enough for the stats and chart.
+const TRACE_LIMIT = 100
+
 export async function fetchTraces(filters: TraceFilters): Promise<TraceSummary[]> {
-  const params = new URLSearchParams()
+  const params = new URLSearchParams({ limit: String(TRACE_LIMIT) })
   if (filters.service) params.set('service', filters.service)
   if (filters.errorsOnly) params.set('errors_only', 'true')
   if (filters.minDurationMs !== null) params.set('min_duration_ms', String(filters.minDurationMs))
+  if (filters.lookbackMs !== null) params.set('from_ms', String(Date.now() - filters.lookbackMs))
 
   const data = await getJson<{ traces: TraceSummary[] }>(`/api/traces?${params}`)
   return data.traces

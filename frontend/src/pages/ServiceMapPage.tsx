@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useOutletContext } from 'react-router'
 import { Background, Controls, MarkerType, ReactFlow } from '@xyflow/react'
 import type { Edge } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { fetchServiceMap } from '../api/client'
 import type { ServiceMap } from '../api/types'
 import { formatDuration, formatPercent } from '../lib/format'
+import { serviceColor } from '../lib/serviceColor'
 import { ERROR_RATE_THRESHOLD, layoutServiceMap } from '../lib/serviceMapLayout'
 import { usePageTitle } from '../lib/usePageTitle'
 import { EmptyState, ErrorState, LoadingState } from '../components/StatusMessage'
 import ServiceNodeCard from '../components/ServiceNodeCard'
 import type { ServiceFlowNode } from '../components/ServiceNodeCard'
+import SidebarPanel from '../components/SidebarPanel'
+import type { Theme } from '../lib/theme'
 
 const MINUTE = 60 * 1000
 const RANGES = [
@@ -29,19 +32,27 @@ const NODE_TYPES = { service: ServiceNodeCard }
 export default function ServiceMapPage() {
   usePageTitle('Service Map')
   const navigate = useNavigate()
+  // Layout passes the theme down so React Flow can draw its own parts in dark mode too.
+  const { theme } = useOutletContext<{ theme: Theme }>()
   const [rangeMs, setRangeMs] = useState(5 * MINUTE)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [map, setMap] = useState<ServiceMap | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [refreshCount, setRefreshCount] = useState(0)
   const refresh = () => setRefreshCount((n) => n + 1)
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null)
+  // Ticks every second so "Updated 3 s ago" counts up.
+  const [now, setNow] = useState(Date.now())
 
   useEffect(() => {
     let ignore = false
     setError(null)
     fetchServiceMap(rangeMs)
       .then((result) => {
-        if (!ignore) setMap(result)
+        if (!ignore) {
+          setMap(result)
+          setUpdatedAt(Date.now())
+        }
       })
       .catch((err: Error) => {
         if (!ignore) setError(err.message)
@@ -58,6 +69,11 @@ export default function ServiceMapPage() {
     return () => clearInterval(timer)
   }, [autoRefresh])
 
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+
   // Turn the API's nodes/edges into React Flow's format, with positions.
   const { flowNodes, flowEdges } = useMemo(() => {
     if (!map) return { flowNodes: [], flowEdges: [] }
@@ -70,7 +86,7 @@ export default function ServiceMapPage() {
     }))
     const flowEdges: Edge[] = map.edges.map((e) => {
       const failing = e.error_rate > ERROR_RATE_THRESHOLD
-      const color = failing ? 'var(--down)' : '#8c959f'
+      const color = failing ? 'var(--down)' : 'var(--edge)'
       return {
         id: `${e.source}->${e.target}`,
         source: e.source,
@@ -86,14 +102,32 @@ export default function ServiceMapPage() {
     return { flowNodes, flowEdges }
   }, [map])
 
-  const failingEdges = map?.edges.filter((e) => e.error_rate > ERROR_RATE_THRESHOLD) ?? []
+  const failing = map?.edges.filter((e) => e.error_rate > ERROR_RATE_THRESHOLD) ?? []
+  // An edge whose target also calls a failing service is probably failing because of it.
+  const isDownstreamCause = (target: string) => failing.some((e) => e.source === target)
+  // Likely causes first (their target has no failing calls of its own), then by error rate.
+  const failingEdges = [...failing].sort(
+    (a, b) =>
+      Number(isDownstreamCause(a.target)) - Number(isDownstreamCause(b.target)) || b.error_rate - a.error_rate,
+  )
 
   return (
     <section className="page">
-      <h1>Service Map</h1>
+      <div className="page-header">
+        <div>
+          <h1>Service Map</h1>
+          <p className="muted">Who calls whom, and how those calls are doing.</p>
+        </div>
+        <div className="page-actions">
+          {updatedAt !== null && (
+            <span className="muted">Updated {Math.max(0, Math.round((now - updatedAt) / 1000))} s ago</span>
+          )}
+          <button className="button" onClick={refresh}>Refresh</button>
+        </div>
+      </div>
 
-      <div className="filters">
-        <label>
+      <SidebarPanel title="Map options">
+        <label className="field">
           Time range
           <select value={rangeMs} onChange={(e) => setRangeMs(Number(e.target.value))}>
             {RANGES.map((r) => (
@@ -103,16 +137,16 @@ export default function ServiceMapPage() {
             ))}
           </select>
         </label>
-        <label className="checkbox">
+        <label className="toggle">
           <input
             type="checkbox"
             checked={autoRefresh}
             onChange={(e) => setAutoRefresh(e.target.checked)}
           />
-          Auto-refresh
+          Auto-refresh every 5 s
         </label>
-        <button onClick={refresh}>Refresh</button>
-      </div>
+        <p className="sidebar-hint">Pick "Last minute" to see a new failure turn red within seconds.</p>
+      </SidebarPanel>
 
       {error && !map ? (
         <ErrorState title="Could not load the service map" message={error} onRetry={refresh} />
@@ -136,28 +170,84 @@ export default function ServiceMapPage() {
             )}
             Click a service or an arrow to see its traces.
           </p>
-          <div className="map-canvas">
-            <ReactFlow
-              nodes={flowNodes}
-              edges={flowEdges}
-              nodeTypes={NODE_TYPES}
-              fitView
-              fitViewOptions={{ padding: 0.25 }}
-              nodesDraggable={false}
-              nodesConnectable={false}
-              proOptions={{ hideAttribution: true }}
-              onNodeClick={(_, node) => navigate(`/traces?service=${encodeURIComponent(node.id)}`)}
-              onEdgeClick={(_, edge) => {
-                // An arrow describes the target's side of the call: show the target's traces,
-                // only the failing ones if the arrow is red.
-                const data = map.edges.find((e) => `${e.source}->${e.target}` === edge.id)
-                const failing = data !== undefined && data.error_rate > ERROR_RATE_THRESHOLD
-                navigate(`/traces?service=${encodeURIComponent(edge.target)}${failing ? '&errors=1' : ''}`)
-              }}
-            >
-              <Background gap={20} color="#eaeef2" />
-              <Controls showInteractive={false} />
-            </ReactFlow>
+          <div className="map-columns">
+            <div className="map-canvas">
+              <ReactFlow
+                nodes={flowNodes}
+                edges={flowEdges}
+                nodeTypes={NODE_TYPES}
+                colorMode={theme}
+                fitView
+                fitViewOptions={{ padding: 0.25 }}
+                nodesDraggable={false}
+                nodesConnectable={false}
+                proOptions={{ hideAttribution: true }}
+                onNodeClick={(_, node) => navigate(`/traces?service=${encodeURIComponent(node.id)}`)}
+                onEdgeClick={(_, edge) => {
+                  // An arrow describes the target's side of the call: show the target's traces,
+                  // only the failing ones if the arrow is red.
+                  const data = map.edges.find((e) => `${e.source}->${e.target}` === edge.id)
+                  const failing = data !== undefined && data.error_rate > ERROR_RATE_THRESHOLD
+                  navigate(`/traces?service=${encodeURIComponent(edge.target)}${failing ? '&errors=1' : ''}`)
+                }}
+              >
+                <Background gap={20} color="var(--grid-dot)" />
+                <Controls showInteractive={false} />
+              </ReactFlow>
+            </div>
+
+            <aside className="map-side" aria-label="Call health">
+              <section className={failingEdges.length > 0 ? 'card map-panel failing' : 'card map-panel'}>
+                <h2>Failing calls</h2>
+                {failingEdges.length === 0 ? (
+                  <p className="muted">None. Every call is under {formatPercent(ERROR_RATE_THRESHOLD)} errors.</p>
+                ) : (
+                  failingEdges.map((e) => (
+                    <div key={`${e.source}->${e.target}`} className="failing-call">
+                      <span className="mono">{e.source} → {e.target}</span>
+                      <span className="muted">
+                        <span className="error-text strong">{formatPercent(e.error_rate)} errors</span>
+                        {' · '}avg {formatDuration(e.avg_duration_ms)} · p95 {formatDuration(e.p95_duration_ms)}
+                      </span>
+                      {isDownstreamCause(e.target) ? (
+                        <span className="muted">Probably failing because {e.target} has failing calls itself.</span>
+                      ) : (
+                        <button
+                          className="button danger"
+                          onClick={() => navigate(`/traces?service=${encodeURIComponent(e.target)}&errors=1`)}
+                        >
+                          See failing traces
+                        </button>
+                      )}
+                    </div>
+                  ))
+                )}
+              </section>
+
+              <section className="card map-panel">
+                <h2>Services</h2>
+                <div className="service-rows">
+                  {map.nodes.map((n) => (
+                    <button
+                      key={n.id}
+                      className="service-row"
+                      onClick={() => navigate(`/traces?service=${encodeURIComponent(n.id)}`)}
+                    >
+                      <span className="service-chip">
+                        <span className="service-dot" style={{ background: serviceColor(n.id) }} />
+                        {n.id}
+                      </span>
+                      <span className="mono muted">
+                        {n.avg_duration_ms === null ? '—' : formatDuration(n.avg_duration_ms)}
+                      </span>
+                      <span className={n.error_rate > ERROR_RATE_THRESHOLD ? 'mono error-text strong' : 'mono muted'}>
+                        {formatPercent(n.error_rate)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            </aside>
           </div>
         </>
       )}
