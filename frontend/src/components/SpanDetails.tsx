@@ -1,8 +1,16 @@
-import type { Span } from '../api/types'
-import { formatDuration } from '../lib/format'
+import { Link } from 'react-router'
+import type { LogEntry, Span } from '../api/types'
+import { formatDuration, formatTimeMs } from '../lib/format'
 
-// Everything we know about one span: the main fields, then all raw attributes.
-export default function SpanDetails({ span }: { span: Span }) {
+interface SpanDetailsProps {
+  span: Span
+  // Logs written while this span ran; null while they're still loading.
+  logs: LogEntry[] | null
+  traceId: string
+}
+
+// Everything we know about one span: the main fields, its attributes, and its logs.
+export default function SpanDetails({ span, logs, traceId }: SpanDetailsProps) {
   const fields: [string, string][] = [
     ['Service', span.service],
     ['Kind', span.kind ?? '—'],
@@ -17,7 +25,7 @@ export default function SpanDetails({ span }: { span: Span }) {
   const attributes = Object.entries(span.attributes).sort(([a], [b]) => a.localeCompare(b))
 
   return (
-    <div className="span-details">
+    <aside className="span-details" aria-label="Span details">
       <h2>{span.name}</h2>
       <dl>
         {fields.map(([label, value]) => (
@@ -41,6 +49,26 @@ export default function SpanDetails({ span }: { span: Span }) {
           ))}
         </dl>
       )}
-    </div>
+
+      <div className="span-logs-head">
+        <h3>Logs from this span</h3>
+        <Link to={`/logs?trace_id=${traceId}`}>Open in Logs</Link>
+      </div>
+      {logs === null ? (
+        <p className="muted">Loading logs…</p>
+      ) : logs.length === 0 ? (
+        <p className="muted">This span wrote no logs.</p>
+      ) : (
+        <ul className="span-logs">
+          {logs.map((log, i) => (
+            <li key={`${log.timestamp_ms}-${i}`} className={log.severity === 'ERROR' || log.severity === 'FATAL' ? 'err' : undefined}>
+              <span className="muted">{formatTimeMs(log.timestamp_ms)}</span>
+              <span className={`sev sev-${(log.severity ?? 'none').toLowerCase()}`}>{log.severity ?? '—'}</span>
+              <span>{log.body ?? '—'}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </aside>
   )
 }

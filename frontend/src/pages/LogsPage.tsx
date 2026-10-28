@@ -9,6 +9,7 @@ import { useDebouncedValue } from '../lib/useDebouncedValue'
 import { usePageTitle } from '../lib/usePageTitle'
 import { EmptyState, ErrorState, LoadingState } from '../components/StatusMessage'
 import SidebarPanel from '../components/SidebarPanel'
+import LogVolume from '../components/LogVolume'
 import { serviceColor } from '../lib/serviceColor'
 
 const LIMIT = 100
@@ -57,6 +58,9 @@ export default function LogsPage() {
   // Logs that arrived over live tail, so only those rows get the highlight.
   // A ref, not state: changing it shouldn't cause a re-render by itself.
   const arrivedLive = useRef(new WeakSet<LogEntry>())
+  // When each live log arrived (last 10 s), for the logs-per-second readout.
+  const arrivals = useRef<number[]>([])
+  const [liveRate, setLiveRate] = useState(0)
 
   const debouncedQuery = useDebouncedValue(query)
   const debouncedTags = useDebouncedValue(tagsText)
@@ -113,6 +117,7 @@ export default function LogsPage() {
       filters,
       (log) => {
         arrivedLive.current.add(log)
+        arrivals.current.push(Date.now())
         setLogs((prev) => {
           const key = logKey(log)
           if (prev.some((p) => logKey(p) === key)) return prev
@@ -128,6 +133,16 @@ export default function LogsPage() {
     return close
   }, [live, filters])
 
+  useEffect(() => {
+    if (!live) return
+    const timer = setInterval(() => {
+      const cutoff = Date.now() - 10_000
+      arrivals.current = arrivals.current.filter((t) => t > cutoff)
+      setLiveRate(arrivals.current.length / 10)
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [live])
+
   return (
     <section className="page">
       <div className="page-header">
@@ -138,7 +153,9 @@ export default function LogsPage() {
         <div className="page-actions">
           {live && (
             <span className={`live-status live-${liveStatus}`} role="status">
-              {LIVE_LABELS[liveStatus]}
+              {liveStatus === 'live'
+                ? `Live · ${liveRate.toFixed(liveRate < 10 ? 1 : 0)} logs/s`
+                : LIVE_LABELS[liveStatus]}
             </span>
           )}
           <button
@@ -221,6 +238,8 @@ export default function LogsPage() {
           </button>
         </p>
       )}
+
+      {!error && <LogVolume logs={logs} />}
 
       {error ? (
         <ErrorState

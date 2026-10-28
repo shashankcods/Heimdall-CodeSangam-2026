@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router'
-import { fetchTrace } from '../api/client'
-import type { TraceDetail } from '../api/types'
+import { fetchLogs, fetchTrace } from '../api/client'
+import type { LogEntry, TraceDetail } from '../api/types'
 import { buildSpanTree, deepestErrorSpan, flattenTree } from '../lib/spanTree'
 import { formatDuration, formatTime } from '../lib/format'
 import { usePageTitle } from '../lib/usePageTitle'
@@ -21,6 +21,9 @@ export default function TraceDetailPage() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null)
   const [reloadCount, setReloadCount] = useState(0)
+  // All logs of this trace; each span's share is picked out below.
+  const [traceLogs, setTraceLogs] = useState<LogEntry[] | null>(null)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     if (!traceId) return
@@ -45,6 +48,36 @@ export default function TraceDetailPage() {
     }
   }, [traceId, reloadCount])
 
+  useEffect(() => {
+    if (!traceId) return
+    let ignore = false
+    setTraceLogs(null)
+    fetchLogs({ q: '', regex: false, service: null, severity: null, traceId, tags: [] })
+      .then((logs) => {
+        if (!ignore) setTraceLogs(logs)
+      })
+      .catch(() => {
+        // Logs are extra context here; without them the waterfall still works.
+        if (!ignore) setTraceLogs([])
+      })
+    return () => {
+      ignore = true
+    }
+  }, [traceId])
+
+  const copyTraceId = () => {
+    if (!trace) return
+    navigator.clipboard
+      .writeText(trace.trace_id)
+      .then(() => {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      })
+      .catch(() => {
+        // Clipboard blocked (e.g. page not focused): the ID is still visible to select by hand.
+      })
+  }
+
   // Rebuild the tree only when the trace changes, not on every click.
   const tree = useMemo(() => (trace ? buildSpanTree(trace.spans) : []), [trace])
   const rows = useMemo(() => flattenTree(tree, collapsed), [tree, collapsed])
@@ -58,6 +91,13 @@ export default function TraceDetailPage() {
   }
 
   const selectedSpan = trace?.spans.find((s) => s.span_id === selectedSpanId) ?? null
+  // Oldest first, so they read like a story.
+  const spanLogs =
+    traceLogs === null
+      ? null
+      : traceLogs
+          .filter((l) => l.span_id === selectedSpanId)
+          .sort((a, b) => a.timestamp_ms - b.timestamp_ms)
   const root = tree[0]?.span
   const errorCount = trace?.spans.filter((s) => s.status_code === 'ERROR').length ?? 0
   const cause = useMemo(() => deepestErrorSpan(tree), [tree])
@@ -105,6 +145,9 @@ export default function TraceDetailPage() {
               </p>
             </div>
             <div className="page-actions">
+              <button className="button" onClick={copyTraceId}>
+                {copied ? 'Copied ✓' : 'Copy trace ID'}
+              </button>
               <Link className="button primary" to={`/logs?trace_id=${trace.trace_id}`}>
                 View logs →
               </Link>
@@ -150,7 +193,7 @@ export default function TraceDetailPage() {
                 onSelect={setSelectedSpanId}
               />
             </div>
-            {selectedSpan && <SpanDetails span={selectedSpan} />}
+            {selectedSpan && <SpanDetails span={selectedSpan} logs={spanLogs} traceId={trace.trace_id} />}
           </div>
         </>
       )}

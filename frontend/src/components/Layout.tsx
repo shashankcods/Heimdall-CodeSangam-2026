@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router'
 import BackendStatus from './BackendStatus'
+import LogoMark from './LogoMark'
 import { SidebarSlotContext } from './SidebarPanel'
 import { useTheme } from '../lib/theme'
 
@@ -48,12 +49,9 @@ export default function Layout() {
         <aside className="sidebar">
           <div className="brand">
             <span className="brand-mark">
-              <Icon><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z" /><circle cx="12" cy="12" r="2.5" /></Icon>
+              <LogoMark />
             </span>
-            <span className="brand-text">
-              <span className="brand-name">Heimdall</span>
-              <span className="brand-sub">Observability</span>
-            </span>
+            <span className="brand-name">heimdall</span>
           </div>
           <nav aria-label="Main">
             {NAV_ITEMS.map((item) => (

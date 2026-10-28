@@ -11,6 +11,23 @@ import { serviceColor } from '../lib/serviceColor'
 
 const AUTO_REFRESH_MS = 5000
 
+const MINUTE = 60 * 1000
+// URL value -> milliseconds. No ?lookback= means the backend's default, the last hour.
+const LOOKBACKS: { value: string; label: string; ms: number }[] = [
+  { value: '5m', label: 'Last 5 minutes', ms: 5 * MINUTE },
+  { value: '15m', label: 'Last 15 minutes', ms: 15 * MINUTE },
+  { value: '', label: 'Last hour', ms: 60 * MINUTE },
+  { value: '6h', label: 'Last 6 hours', ms: 6 * 60 * MINUTE },
+  { value: '24h', label: 'Last 24 hours', ms: 24 * 60 * MINUTE },
+]
+
+// p95: the duration 95% of traces are faster than.
+function percentile95(values: number[]): number {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted[Math.ceil(sorted.length * 0.95) - 1]
+}
+
 // Filters live in the URL (/traces?service=x&errors=1&min_ms=40), so they survive
 // opening a trace and coming back, a page reload, or sharing the link.
 function filtersFromUrl(params: URLSearchParams): TraceFilters {
@@ -19,6 +36,7 @@ function filtersFromUrl(params: URLSearchParams): TraceFilters {
     service: params.get('service'),
     errorsOnly: params.get('errors') === '1',
     minDurationMs: minMs !== null && minMs !== '' && !Number.isNaN(Number(minMs)) ? Number(minMs) : null,
+    lookbackMs: LOOKBACKS.find((l) => l.value !== '' && l.value === params.get('lookback'))?.ms ?? null,
   }
 }
 
@@ -27,6 +45,8 @@ function filtersToUrl(filters: TraceFilters): URLSearchParams {
   if (filters.service) params.set('service', filters.service)
   if (filters.errorsOnly) params.set('errors', '1')
   if (filters.minDurationMs !== null) params.set('min_ms', String(filters.minDurationMs))
+  const lookback = LOOKBACKS.find((l) => l.ms === filters.lookbackMs)
+  if (filters.lookbackMs !== null && lookback?.value) params.set('lookback', lookback.value)
   return params
 }
 
@@ -114,6 +134,8 @@ export default function TracesPage() {
   const firstLoad = loading && traces.length === 0
   // Duration bars are relative to the slowest trace in the list.
   const maxDuration = Math.max(1, ...traces.map((t) => t.duration_ms))
+  const errorTraces = traces.filter((t) => t.has_error).length
+  const errorRate = traces.length > 0 ? errorTraces / traces.length : 0
 
   return (
     <section className="page">
@@ -146,6 +168,22 @@ export default function TracesPage() {
             {services.map((name) => (
               <option key={name} value={name}>
                 {name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="field">
+          Lookback
+          <select
+            value={LOOKBACKS.find((l) => l.ms === filters.lookbackMs)?.value ?? ''}
+            onChange={(e) =>
+              updateFilters({ lookbackMs: LOOKBACKS.find((l) => l.value === e.target.value && l.value !== '')?.ms ?? null })
+            }
+          >
+            {LOOKBACKS.map((l) => (
+              <option key={l.label} value={l.value}>
+                {l.label}
               </option>
             ))}
           </select>
@@ -194,9 +232,30 @@ export default function TracesPage() {
         )
       ) : (
         <>
+          <div className="stat-grid">
+            <div className="card stat">
+              <span className="stat-label">Traces</span>
+              <span className="stat-value">{traces.length}</span>
+            </div>
+            <div className="card stat">
+              <span className="stat-label">Error rate</span>
+              <span className={errorRate > 0.05 ? 'stat-value error-text' : 'stat-value'}>
+                {(errorRate * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="card stat">
+              <span className="stat-label">p95 duration</span>
+              <span className="stat-value">{formatDuration(percentile95(traces.map((t) => t.duration_ms)))}</span>
+            </div>
+            <div className="card stat">
+              <span className="stat-label">Services</span>
+              <span className="stat-value">{services.length}</span>
+            </div>
+          </div>
           <TraceScatter traces={traces} onOpen={openTrace} />
           <p className="result-count muted">
-            {traces.length} {traces.length === 1 ? 'trace' : 'traces'}
+            {traces.length} {traces.length === 1 ? 'trace' : 'traces'} · {errorTraces} with errors
+            {traces.length === 100 && ' · showing the newest 100'}
           </p>
           <div className={loading ? 'card table-scroll is-refreshing' : 'card table-scroll'}>
             <table className="trace-table">
