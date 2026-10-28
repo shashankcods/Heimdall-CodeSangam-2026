@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "typecheck": "tsc",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "gen:types": "openapi-typescript http://localhost:4318/openapi.json -o src/api/schema.d.ts"
   },
   "dependencies": {
     "@xyflow/react": "^12.12.0",
@@ -20,6 +21,7 @@
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "openapi-typescript": "^7.13.0",
     "typescript": "~5.9.2",
     "vite": "^7.1.0"
   }

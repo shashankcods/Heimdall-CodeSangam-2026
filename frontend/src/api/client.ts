@@ -1,9 +1,12 @@
 import type {
   LogEntry,
   LogFilters,
+  LogList,
+  ServiceList,
   ServiceMap,
   TraceDetail,
   TraceFilters,
+  TraceList,
   TraceSummary,
 } from './types'
 
@@ -44,7 +47,7 @@ export async function fetchTraces(filters: TraceFilters): Promise<TraceSummary[]
   if (filters.minDurationMs !== null) params.set('min_duration_ms', String(filters.minDurationMs))
   if (filters.lookbackMs !== null) params.set('from_ms', String(Date.now() - filters.lookbackMs))
 
-  const data = await getJson<{ traces: TraceSummary[] }>(`/api/traces?${params}`)
+  const data = await getJson<TraceList>(`/api/traces?${params}`)
   return data.traces
 }
 
@@ -59,7 +62,7 @@ export async function fetchServiceMap(rangeMs: number): Promise<ServiceMap> {
 }
 
 export async function fetchServices(): Promise<string[]> {
-  const data = await getJson<{ services: string[] }>('/api/services')
+  const data = await getJson<ServiceList>('/api/services')
   return data.services
 }
 
@@ -77,7 +80,7 @@ function logParams(filters: LogFilters): URLSearchParams {
 }
 
 export async function fetchLogs(filters: LogFilters): Promise<LogEntry[]> {
-  const data = await getJson<{ logs: LogEntry[] }>(`/api/logs?${logParams(filters)}`)
+  const data = await getJson<LogList>(`/api/logs?${logParams(filters)}`)
   return data.logs
 }
 
