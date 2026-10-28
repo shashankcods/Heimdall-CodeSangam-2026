@@ -636,6 +636,18 @@ textarea {
   margin-right: 10px;
   border-left: 1px solid var(--border-strong);
   border-bottom: 1px solid var(--border-strong);
+  /* Drag to zoom: crosshair cursor, and no text selection or page scroll while dragging. */
+  cursor: crosshair;
+  user-select: none;
+  touch-action: none;
+}
+
+.scatter-brush {
+  position: absolute;
+  z-index: 3;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  pointer-events: none;
 }
 
 .scatter-grid {
