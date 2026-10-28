@@ -49,7 +49,8 @@ export default function LogsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
-  const [live, setLive] = useState(false)
+  // On by default so new logs stream in as soon as the page opens.
+  const [live, setLive] = useState(true)
   const [liveStatus, setLiveStatus] = useState<LiveStatus>('connecting')
   // Logs that arrived over live tail, so only those rows get the highlight.
   // A ref, not state: changing it shouldn't cause a re-render by itself.
