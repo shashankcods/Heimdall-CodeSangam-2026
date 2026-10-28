@@ -1,21 +1,161 @@
 # Heimdall
 
-**Heimdall: an OpenTelemetry-native observability engine.**
+> **An OpenTelemetry-native observability engine.**  
+> Self-hosted distributed tracing, live log exploration, and auto-generated service topology, backed by DuckDB.
 
-A self-hosted mini Jaeger + log explorer + service map, backed by DuckDB. Services send standard OTLP traces and logs; Heimdall stores them in a columnar store and lets you explore traces as waterfalls, search logs, and see the service topology.
+---
 
-> Work in progress. See [DESIGN.md](DESIGN.md) for the architecture and build plan.
-
-## Layout
+## Architecture Overview
 
 ```
-backend/    FastAPI ingest + DuckDB store + query API (Python, uv)
-frontend/   React + TypeScript UI (Vite)
-demo/       Fake instrumented services + load generator
+                      ┌──────────────────────────────────────────────┐
+                      │    Instrumented Applications & Services      │
+                      │   (Python FastAPI, Node.js Express, etc.)    │
+                      └──────────────────────┬───────────────────────┘
+                                             │ OTLP / Protobuf (HTTP / Gzip)
+                                             ▼
+                      ┌──────────────────────────────────────────────┐
+                      │    Optional OpenTelemetry Collector (otelcol)│
+                      │       (batch processor, send_batch: 256)     │
+                      └──────────────────────┬───────────────────────┘
+                                             │ POST /v1/traces, POST /v1/logs
+                                             ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                   HEIMDALL BACKEND                                     │
+│                                                                                        │
+│   1. INGESTION GATEWAY                                                                 │
+│      Decompress Gzip ──► Decode Protobuf ──► Flatten Span & Log Models                 │
+│                                │                                                       │
+│                                ▼                                                       │
+│   2. BOUNDED QUEUE & BACKPRESSURE                                                      │
+│      asyncio.Queue(maxsize=100k) ──► HTTP 429 on saturation (Retry-After)              │
+│                                │                                                       │
+│                                ▼                                                       │
+│   3. BATCH WRITER                                                                      │
+│      Flush trigger: 500 records OR 1.0s ──► PyArrow Table Bulk Insert                  │
+│                                │                                                       │
+│                                ▼                                                       │
+│   4. COLUMNAR STORAGE ENGINE (DuckDB)                                                  │
+│      duckdb.connect(db_path) ──► spans (flat schema) + logs (indexed on trace/time)    │
+│                                │                                                       │
+│                                ▼                                                       │
+│   5. ANALYTICAL QUERY & EVENT LAYER                                                    │
+│      list_traces, get_trace, search_logs, service_map (self-join), live SSE broadcast  │
+│                                │                                                       │
+│               ┌────────────────┴────────────────────────┐                              │
+│               ▼                                         ▼                              │
+│   6. REST & SSE API (/api/*)              7. MODEL CONTEXT PROTOCOL (MCP)              │
+│      FastAPI endpoints + SSE stream          FastMCP Server for AI Assistants          │
+└───────────────┬─────────────────────────────────────────┬──────────────────────────────┘
+                │                                         │
+                ▼                                         ▼
+┌────────────────────────────────┐      ┌────────────────────────────────────────────────┐
+│      HEIMDALL FRONTEND         │      │             AI CODING AGENTS                   │
+│   React + TypeScript + Vite    │      │        (Claude Code, Cursor, AGY)              │
+│  - Trace Waterfall Timeline    │      │  - Inspect spans, root cause error traces      │
+│  - Live Log Explorer (SSE)     │      │  - Query service topology and error rates      │
+│  - Interactive Service Map     │      └────────────────────────────────────────────────┘
+└────────────────────────────────┘
 ```
 
-## Running (backend)
+---
 
+## Columnar Storage Benchmark: DuckDB vs SQLite
+
+Observability data is write-heavy and queried along column dimensions (filter by `service`, aggregate by `status_code`, compute `percentile_cont`). Heimdall uses **DuckDB** from day one.
+
+The benchmark below compares DuckDB (columnar) against SQLite (row-store) across identical synthetic trace datasets generated by `bench/bench_duckdb_vs_sqlite.py`:
+
+```
+======================================================================
+      COLUMNAR (DuckDB) VS ROW-STORE (SQLite) BENCHMARK REPORT
+      Dataset: 100,000 flat spans
+======================================================================
+Benchmark Metric                 | DuckDB (Columnar) | SQLite (Row)   | Speedup 
+----------------------------------------------------------------------
+1. Topology Self-Join            |         27.88 ms  |     554.79 ms  |   19.9x
+2. Service Error Aggregation     |          3.90 ms  |      67.68 ms  |   17.4x
+3. Percentile Math (p50/p95/p99) |         10.56 ms  |   (approx)     |  Native
+----------------------------------------------------------------------
+Storage Footprint on Disk        |         4.62 MB   |      21.22 MB  |    4.6x
+======================================================================
+```
+
+### Why Columnar Wins:
+1. **Topology Derivation (19.9x faster)**: Service maps require self-joining child spans to parent spans across service boundaries. DuckDB executes this via vectorized hash joins only scanning `trace_id`, `parent_span_id`, and `service`, skipping unreferenced payload columns.
+2. **Error Rate Aggregations (17.4x faster)**: Scanning `status_code` and `service` across millions of rows executes via SIMD columnar filters without loading entire rows into memory.
+3. **Storage Compression (4.6x smaller)**: Columnar bitpacking, dictionary encoding, and RLE compress repetitive service names, HTTP routes, and status codes far more efficiently than row-based B-trees.
+4. **Bulk Ingestion**: Arrow table streaming into DuckDB achieves **220,000+ spans/second** bulk write throughput.
+
+---
+
+## Demo Microservices Cluster
+
+Heimdall includes an end-to-end, multi-language e-commerce demo cluster to simulate real-world microservice traffic and failure propagation:
+
+```
+                    ┌─────────────────────────┐
+                    │   Client / Load Gen     │  (2 req/sec continuous load)
+                    └────────────┬────────────┘
+                                 │ HTTP POST /order
+                                 ▼
+                    ┌─────────────────────────┐
+                    │      gateway (8001)     │  (FastAPI + Python OTel SDK)
+                    └────────────┬────────────┘
+                                 │ HTTP POST /orders
+                                 ▼
+                    ┌─────────────────────────┐
+                    │   order-service (8002)  │  (FastAPI + PostgreSQL DB span)
+                    └─────┬─────────────┬─────┘
+          POST /reserve   │             │  POST /charge
+                          ▼             ▼
+   ┌──────────────────────────┐    ┌──────────────────────────┐
+   │ inventory-service (8004) │    │  payment-service (8003)  │
+   │ (Node.js Express + OTel) │    │ (FastAPI + Stripe span)  │
+   └──────────────────────────┘    └──────────────────────────┘
+```
+
+- **Cross-Language Distributed Tracing**: Distributed W3C `traceparent` headers propagate seamlessly between Python FastAPI and Node.js Express.
+- **Dynamic Fault Injection**: Toggle faults in real time (`POST /fault`) on `payment-service` (1.9s latency + 504 Gateway Timeout) or `inventory-service` (stock reservation failure) and observe the waterfall turning red on Heimdall's UI.
+
+---
+
+## Key Features
+
+### 1. Distributed Trace Flamegraph & Waterfall
+- Visualizes end-to-end request latency, hierarchical parent-child span timelines, duration bars, and HTTP status codes.
+- Highlights root cause spans in red when errors occur (e.g. 504 timeout on downstream calls).
+
+### 2. Live Log Explorer & Tail
+- Ingests structured logs at `/v1/logs` carrying `trace_id` and `span_id`.
+- Full-text search and regex filtering.
+- Real-time live log tail over Server-Sent Events (SSE).
+- One-click jump from a log entry directly into its trace waterfall.
+
+### 3. Service Topology Map
+- Auto-generated dependency graph computed from inter-service parent-child links.
+- Displays request volumes, average latency, and error rates per service edge.
+
+### 4. AI Assistant Model Context Protocol (MCP) Server
+- Exposes telemetry tools over standard MCP HTTP transport (`/mcp`):
+  - `list_services`: List all active services and their span volumes.
+  - `search_traces`: Find slow or failing traces by service, duration, or error flag.
+  - `get_trace`: Retrieve the complete span tree for root-cause analysis.
+  - `search_logs`: Search correlated structured logs.
+  - `get_service_map`: Inspect service dependency graph and edge error rates.
+
+Connect with Claude Code:
+```bash
+claude mcp add --transport http heimdall http://localhost:4318/mcp
+```
+
+---
+
+## Quickstart
+
+### 1. Run Heimdall Locally
+
+**Backend:**
 ```bash
 cd backend
 uv sync
@@ -23,20 +163,42 @@ uv run pytest
 uv run uvicorn heimdall.api.main:app --port 4318
 ```
 
-Point any OTel SDK at it with `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`. Traces go to `/v1/traces` and logs to `/v1/logs`; browse traces at `http://localhost:4318/api/traces`.
-
-To send real SDK traces and logs from a tiny instrumented service: `uv run demo/sdk_smoke.py` (from the repo root, with the backend running).
-
-Settings (environment variables): `HEIMDALL_DB_PATH` (default `heimdall.duckdb`), `HEIMDALL_MAX_PENDING` (100000), `HEIMDALL_BATCH_SIZE` (500), `HEIMDALL_FLUSH_INTERVAL` (1.0 s), `HEIMDALL_MAX_LIVE_VIEWERS` (50).
-
-## Ask an AI assistant (MCP)
-
-The backend also serves an MCP server at `http://localhost:4318/mcp` (streamable HTTP), so an AI assistant can investigate your telemetry. Tools: `list_services`, `search_traces`, `get_trace`, `search_logs`, `get_service_map`, all read-only.
-
-With Claude Code:
-
+**Frontend:**
 ```bash
-claude mcp add --transport http heimdall http://localhost:4318/mcp
+cd frontend
+npm install
+npm run dev
+```
+Open `http://localhost:5173` to explore traces, logs, and the service map.
+
+### 2. Run the Demo Cluster
+
+**Option A: Single-Command Docker Compose**
+```bash
+docker compose -f docker-compose.demo.yml up --build
 ```
 
-Then ask something like "why are orders failing?". For security the server only accepts requests addressed to `localhost` / `127.0.0.1`.
+**Option B: Python + Node Runner**
+```bash
+uv run demo/run_demo.py
+```
+Type `f` to inject payment fault, `i` to inject inventory fault, `r` to reset, and `q` to quit.
+
+### 3. Run with OpenTelemetry Collector
+```bash
+docker compose -f demo/docker-compose.collector.yml up --build
+```
+
+---
+
+## Environment Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `HEIMDALL_DB_PATH` | `heimdall.duckdb` | Path to persistent DuckDB database file |
+| `HEIMDALL_MAX_PENDING` | `100000` | Bounded ingestion queue capacity before returning 429 |
+| `HEIMDALL_BATCH_SIZE` | `500` | Maximum span/log batch size before writing to DuckDB |
+| `HEIMDALL_FLUSH_INTERVAL` | `1.0` | Maximum seconds before flushing buffer to disk |
+| `HEIMDALL_MAX_LIVE_VIEWERS` | `50` | Maximum concurrent SSE live tail viewers |
+| `HEIMDALL_URL` | `http://127.0.0.1:4318` | Base URL for OTLP exporters |
+
