@@ -15,7 +15,7 @@ Demonstrates why columnar storage wins for observability workloads:
 4. Storage compression per span
 
 Usage:
-    uv run bench/compare_store.py [--spans 100000]
+    uv run bench/bench_duckdb_vs_sqlite.py [--spans 100000]
 """
 
 import argparse
@@ -33,7 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from bench.generate import generate_trace_batch
+from bench.generate_dataset import generate_trace_batch
 
 DUCKDB_FILE = "compare_bench.duckdb"
 SQLITE_FILE = "compare_bench.sqlite"
