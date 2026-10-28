@@ -46,7 +46,8 @@ export async function fetchServices(): Promise<string[]> {
   return data.services
 }
 
-export async function fetchLogs(filters: LogFilters): Promise<LogEntry[]> {
+// Search and live tail take the same filters.
+function logParams(filters: LogFilters): URLSearchParams {
   const params = new URLSearchParams()
   if (filters.q) params.set('q', filters.q)
   if (filters.regex) params.set('regex', 'true')
@@ -55,7 +56,31 @@ export async function fetchLogs(filters: LogFilters): Promise<LogEntry[]> {
   if (filters.traceId) params.set('trace_id', filters.traceId)
   // Repeated param: ?tag=a:1&tag=b:2
   for (const tag of filters.tags) params.append('tag', tag)
+  return params
+}
 
-  const data = await getJson<{ logs: LogEntry[] }>(`/api/logs?${params}`)
+export async function fetchLogs(filters: LogFilters): Promise<LogEntry[]> {
+  const data = await getJson<{ logs: LogEntry[] }>(`/api/logs?${logParams(filters)}`)
   return data.logs
+}
+
+export type LiveStatus = 'connecting' | 'live' | 'reconnecting' | 'stopped'
+
+// Live tail over Server-Sent Events: calls onLog for every new matching log.
+// The browser's EventSource reconnects by itself after a dropped connection.
+// Returns a function that closes the stream.
+export function streamLogs(
+  filters: LogFilters,
+  onLog: (log: LogEntry) => void,
+  onStatus: (status: LiveStatus) => void,
+): () => void {
+  const source = new EventSource(`/api/logs/stream?${logParams(filters)}`)
+  onStatus('connecting')
+  source.onopen = () => onStatus('live')
+  source.addEventListener('log', (event) => onLog(JSON.parse(event.data) as LogEntry))
+  source.onerror = () => {
+    // CLOSED means the server refused (e.g. 503 too many viewers, 400 bad regex): no retry.
+    onStatus(source.readyState === EventSource.CLOSED ? 'stopped' : 'reconnecting')
+  }
+  return () => source.close()
 }

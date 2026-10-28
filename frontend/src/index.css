@@ -549,3 +549,51 @@ body {
   background: none;
   text-decoration: underline;
 }
+
+/* Live tail */
+.filters .live-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.filters .live-toggle.on {
+  border-color: var(--ok);
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.live-toggle.on .live-dot {
+  background: var(--ok);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% { opacity: 0.3; }
+}
+
+.live-status {
+  margin: -4px 0 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.live-status.live-live { color: var(--ok); }
+.live-status.live-reconnecting { color: var(--checking); }
+.live-status.live-stopped { color: var(--down); }
+
+/* A row that just arrived over live tail fades from yellow */
+.log-table tr.log-new td {
+  animation: arrive 2s ease-out;
+}
+
+@keyframes arrive {
+  from { background: #fff8c5; }
+}

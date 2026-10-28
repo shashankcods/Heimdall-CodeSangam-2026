@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
-import { fetchLogs, fetchServices } from '../api/client'
+import { fetchLogs, fetchServices, streamLogs } from '../api/client'
+import type { LiveStatus } from '../api/client'
 import { SEVERITIES } from '../api/types'
 import type { LogEntry, LogFilters, Severity } from '../api/types'
 import { formatTimeMs } from '../lib/format'
@@ -9,14 +10,25 @@ import { usePageTitle } from '../lib/usePageTitle'
 import { EmptyState, ErrorState, LoadingState } from '../components/StatusMessage'
 
 const LIMIT = 100
+// Live tail keeps adding rows; drop the oldest past this so the page stays fast.
+const MAX_LIVE_ROWS = 500
+
+const LIVE_LABELS: Record<LiveStatus, string> = {
+  connecting: 'Connecting…',
+  live: 'Live: new logs appear at the top',
+  reconnecting: 'Connection lost, reconnecting…',
+  stopped: 'Live tail stopped (backend refused or is down)',
+}
 
 // "env:prod  retry:0" -> ["env:prod", "retry:0"]
 function parseTags(text: string): string[] {
   return text.split(/\s+/).filter(Boolean)
 }
 
-function logKey(log: LogEntry, index: number): string {
-  return `${log.timestamp_ms}-${log.span_id ?? ''}-${index}`
+// Built from the log itself (not its position), so keys stay the same when
+// live tail inserts new rows above. Also used to skip duplicates.
+function logKey(log: LogEntry): string {
+  return `${log.timestamp_ms}|${log.service}|${log.span_id ?? ''}|${log.body ?? ''}`
 }
 
 export default function LogsPage() {
@@ -37,6 +49,11 @@ export default function LogsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
+  const [live, setLive] = useState(false)
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>('connecting')
+  // Logs that arrived over live tail, so only those rows get the highlight.
+  // A ref, not state: changing it shouldn't cause a re-render by itself.
+  const arrivedLive = useRef(new WeakSet<LogEntry>())
 
   const debouncedQuery = useDebouncedValue(query)
   const debouncedTags = useDebouncedValue(tagsText)
@@ -84,6 +101,29 @@ export default function LogsPage() {
       ignore = true
     }
   }, [filters, refreshCount])
+
+  // While Live is on, keep one stream open with the current filters.
+  // Changing a filter closes the old stream (cleanup) and opens a new one.
+  useEffect(() => {
+    if (!live) return
+    const close = streamLogs(
+      filters,
+      (log) => {
+        arrivedLive.current.add(log)
+        setLogs((prev) => {
+          const key = logKey(log)
+          if (prev.some((p) => logKey(p) === key)) return prev
+          // The backend flushes logs in batches grouped by service, so they can
+          // arrive slightly out of order: keep the list newest first by time.
+          return [log, ...prev]
+            .sort((a, b) => b.timestamp_ms - a.timestamp_ms)
+            .slice(0, MAX_LIVE_ROWS)
+        })
+      },
+      setLiveStatus,
+    )
+    return close
+  }, [live, filters])
 
   return (
     <section className="page">
@@ -143,7 +183,21 @@ export default function LogsPage() {
         </label>
 
         <button onClick={refresh}>Refresh</button>
+        <button
+          className={live ? 'live-toggle on' : 'live-toggle'}
+          aria-pressed={live}
+          onClick={() => setLive(!live)}
+        >
+          <span className="live-dot" aria-hidden="true" />
+          {live ? 'Live' : 'Go live'}
+        </button>
       </div>
+
+      {live && (
+        <p className={`live-status live-${liveStatus}`} role="status">
+          {LIVE_LABELS[liveStatus]}
+        </p>
+      )}
 
       {traceId && (
         <p className="active-filter">
@@ -186,13 +240,16 @@ export default function LogsPage() {
               </tr>
             </thead>
             <tbody>
-              {logs.map((log, index) => {
-                const key = logKey(log, index)
+              {logs.map((log) => {
+                const key = logKey(log)
                 const expanded = key === expandedKey
                 return (
                   // Fragment groups the row and its optional detail row under one key.
                   <Fragment key={key}>
-                    <tr onClick={() => setExpandedKey(expanded ? null : key)}>
+                    <tr
+                      className={arrivedLive.current.has(log) ? 'log-new' : undefined}
+                      onClick={() => setExpandedKey(expanded ? null : key)}
+                    >
                       <td className="mono">{formatTimeMs(log.timestamp_ms)}</td>
                       <td>
                         <span className={`badge sev-${(log.severity ?? 'none').toLowerCase()}`}>
@@ -243,7 +300,7 @@ export default function LogsPage() {
         </div>
       )}
 
-      {logs.length === LIMIT && (
+      {!live && logs.length === LIMIT && (
         <p className="muted">Showing the newest {LIMIT}. Narrow the filters to see older ones.</p>
       )}
     </section>
