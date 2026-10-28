@@ -126,6 +126,19 @@ def test_get_service_map_shows_the_failing_edge(call):
     assert pay["call_count"] == 2 and pay["error_rate"] == 0.5
 
 
+def test_find_anomalies_tool(conn, call):
+    now = time.time_ns()
+    baseline = [span("d" * 32, f"b{i:015x}", None, "payment-service", "chargeCard", 0, 25,
+                     now - (30 * 60_000 + i * 1000) * MS) for i in range(12)]
+    recent = [span("e" * 32, f"r{i:015x}", None, "payment-service", "chargeCard", 0, 1900,
+                   now - (60_000 + i * 1000) * MS, status="ERROR") for i in range(12)]
+    insert(conn, baseline + recent, "spans")
+    result = call("find_anomalies")
+    pay = next(a for a in result["anomalies"] if a["name"] == "chargeCard")
+    assert pay["error_spike"] is True and pay["p99_ratio"] > 50
+    assert result["recent_window"]["from"].endswith("+00:00")
+
+
 # --- A real MCP client talking to a live server over HTTP ---------------------------
 
 @pytest.fixture
@@ -159,7 +172,8 @@ def test_real_mcp_client_session(live_server):
 
     init, tools, service_map, missing = asyncio.run(session_run())
     assert init.server_info.name == "Heimdall"
-    assert tools == {"list_services", "search_traces", "get_trace", "search_logs", "get_service_map"}
+    assert tools == {"list_services", "search_traces", "get_trace", "search_logs", "get_service_map",
+                     "find_anomalies"}
     assert not service_map.is_error
     assert {(e["source"], e["target"]) for e in service_map.structured_content["edges"]} == {
         ("gateway", "order-service"), ("order-service", "payment-service"),
