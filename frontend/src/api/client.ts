@@ -1,4 +1,11 @@
-import type { LogEntry, LogFilters, TraceDetail, TraceFilters, TraceSummary } from './types'
+import type {
+  LogEntry,
+  LogFilters,
+  ServiceMap,
+  TraceDetail,
+  TraceFilters,
+  TraceSummary,
+} from './types'
 
 export const BACKEND_DOWN = "Can't reach the backend. Is it running?"
 
@@ -39,6 +46,12 @@ export async function fetchTraces(filters: TraceFilters): Promise<TraceSummary[]
 
 export async function fetchTrace(traceId: string): Promise<TraceDetail> {
   return getJson<TraceDetail>(`/api/traces/${encodeURIComponent(traceId)}`)
+}
+
+// Service map for the last `rangeMs` milliseconds.
+export async function fetchServiceMap(rangeMs: number): Promise<ServiceMap> {
+  const params = new URLSearchParams({ from_ms: String(Date.now() - rangeMs) })
+  return getJson<ServiceMap>(`/api/service-map?${params}`)
 }
 
 export async function fetchServices(): Promise<string[]> {

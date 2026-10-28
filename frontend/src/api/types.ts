@@ -67,3 +67,31 @@ export interface LogFilters {
   // Each one "key:value"; a log must match all of them.
   tags: string[]
 }
+
+// GET /api/service-map: services and who calls whom in the time range.
+export interface ServiceNode {
+  id: string
+  // Only "entry" spans count: requests the service handled.
+  request_count: number
+  error_count: number
+  error_rate: number
+  // null when the service had no entry spans in the range.
+  avg_duration_ms: number | null
+  p95_duration_ms: number | null
+}
+
+// source calls target; the numbers describe the target's side of those calls.
+export interface ServiceEdge {
+  source: string
+  target: string
+  call_count: number
+  error_count: number
+  error_rate: number
+  avg_duration_ms: number
+  p95_duration_ms: number
+}
+
+export interface ServiceMap {
+  nodes: ServiceNode[]
+  edges: ServiceEdge[]
+}

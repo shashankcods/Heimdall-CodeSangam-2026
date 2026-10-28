@@ -12,3 +12,9 @@ export function formatTimeMs(ms: number): string {
   const pad = (n: number, width = 2) => String(n).padStart(width, '0')
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`
 }
+
+// 0.0412 -> "4.1%", 0 -> "0%"
+export function formatPercent(rate: number): string {
+  if (rate === 0) return '0%'
+  return `${(rate * 100).toFixed(rate < 0.1 ? 1 : 0)}%`
+}
