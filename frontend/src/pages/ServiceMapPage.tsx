@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useOutletContext } from 'react-router'
 import { Background, Controls, MarkerType, ReactFlow } from '@xyflow/react'
 import type { Edge } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
@@ -11,6 +11,8 @@ import { usePageTitle } from '../lib/usePageTitle'
 import { EmptyState, ErrorState, LoadingState } from '../components/StatusMessage'
 import ServiceNodeCard from '../components/ServiceNodeCard'
 import type { ServiceFlowNode } from '../components/ServiceNodeCard'
+import SidebarPanel from '../components/SidebarPanel'
+import type { Theme } from '../lib/theme'
 
 const MINUTE = 60 * 1000
 const RANGES = [
@@ -29,6 +31,8 @@ const NODE_TYPES = { service: ServiceNodeCard }
 export default function ServiceMapPage() {
   usePageTitle('Service Map')
   const navigate = useNavigate()
+  // Layout passes the theme down so React Flow can draw its own parts in dark mode too.
+  const { theme } = useOutletContext<{ theme: Theme }>()
   const [rangeMs, setRangeMs] = useState(5 * MINUTE)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [map, setMap] = useState<ServiceMap | null>(null)
@@ -70,7 +74,7 @@ export default function ServiceMapPage() {
     }))
     const flowEdges: Edge[] = map.edges.map((e) => {
       const failing = e.error_rate > ERROR_RATE_THRESHOLD
-      const color = failing ? 'var(--down)' : '#8c959f'
+      const color = failing ? 'var(--down)' : 'var(--edge)'
       return {
         id: `${e.source}->${e.target}`,
         source: e.source,
@@ -90,10 +94,18 @@ export default function ServiceMapPage() {
 
   return (
     <section className="page">
-      <h1>Service Map</h1>
+      <div className="page-header">
+        <div>
+          <h1>Service Map</h1>
+          <p className="muted">Who calls whom, and how those calls are doing.</p>
+        </div>
+        <div className="page-actions">
+          <button className="button" onClick={refresh}>Refresh</button>
+        </div>
+      </div>
 
-      <div className="filters">
-        <label>
+      <SidebarPanel title="Map options">
+        <label className="field">
           Time range
           <select value={rangeMs} onChange={(e) => setRangeMs(Number(e.target.value))}>
             {RANGES.map((r) => (
@@ -103,16 +115,16 @@ export default function ServiceMapPage() {
             ))}
           </select>
         </label>
-        <label className="checkbox">
+        <label className="toggle">
           <input
             type="checkbox"
             checked={autoRefresh}
             onChange={(e) => setAutoRefresh(e.target.checked)}
           />
-          Auto-refresh
+          Auto-refresh every 5 s
         </label>
-        <button onClick={refresh}>Refresh</button>
-      </div>
+        <p className="sidebar-hint">Pick "Last minute" to see a new failure turn red within seconds.</p>
+      </SidebarPanel>
 
       {error && !map ? (
         <ErrorState title="Could not load the service map" message={error} onRetry={refresh} />
@@ -141,6 +153,7 @@ export default function ServiceMapPage() {
               nodes={flowNodes}
               edges={flowEdges}
               nodeTypes={NODE_TYPES}
+              colorMode={theme}
               fitView
               fitViewOptions={{ padding: 0.25 }}
               nodesDraggable={false}
@@ -155,7 +168,7 @@ export default function ServiceMapPage() {
                 navigate(`/traces?service=${encodeURIComponent(edge.target)}${failing ? '&errors=1' : ''}`)
               }}
             >
-              <Background gap={20} color="#eaeef2" />
+              <Background gap={20} color="var(--grid-dot)" />
               <Controls showInteractive={false} />
             </ReactFlow>
           </div>

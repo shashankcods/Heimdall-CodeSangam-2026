@@ -48,3 +48,24 @@ export function flattenTree(roots: SpanNode[], collapsed: Set<string>): SpanRow[
   for (const root of roots) visit(root, 0)
   return rows
 }
+
+// The error span furthest down the tree: the step that actually broke, rather than
+// the callers above it that only failed because of it. Ties go to the longer span.
+export function deepestErrorSpan(roots: SpanNode[]): Span | null {
+  let best: Span | null = null
+  let bestDepth = -1
+  const stack = roots.map((node) => ({ node, depth: 0 }))
+  while (stack.length > 0) {
+    const { node, depth } = stack.pop()!
+    const span = node.span
+    if (
+      span.status_code === 'ERROR' &&
+      (depth > bestDepth || (depth === bestDepth && best !== null && span.duration_ms > best.duration_ms))
+    ) {
+      best = span
+      bestDepth = depth
+    }
+    for (const child of node.children) stack.push({ node: child, depth: depth + 1 })
+  }
+  return best
+}

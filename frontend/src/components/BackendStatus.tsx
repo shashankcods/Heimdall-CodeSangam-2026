@@ -4,7 +4,13 @@ type Health = 'checking' | 'ok' | 'down'
 
 const POLL_MS = 5000
 
-// Small dot in the sidebar showing whether GET /api/health answers.
+const LABELS: Record<Health, string> = {
+  checking: 'Checking backend…',
+  ok: 'Backend connected',
+  down: 'Backend unreachable',
+}
+
+// Card at the bottom of the sidebar showing whether GET /api/health answers.
 // Re-checks every few seconds so it turns green once the backend starts.
 export default function BackendStatus() {
   const [health, setHealth] = useState<Health>('checking')
@@ -23,9 +29,9 @@ export default function BackendStatus() {
   }, [])
 
   return (
-    <div className="backend-status">
+    <div className="backend-status" role="status">
       <span className={`dot dot-${health}`} />
-      Backend: {health}
+      {LABELS[health]}
     </div>
   )
 }

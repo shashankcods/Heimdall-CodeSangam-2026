@@ -5,6 +5,9 @@ import type { TraceFilters, TraceSummary } from '../api/types'
 import { formatDuration, formatTime } from '../lib/format'
 import { usePageTitle } from '../lib/usePageTitle'
 import { EmptyState, ErrorState, LoadingState } from '../components/StatusMessage'
+import SidebarPanel from '../components/SidebarPanel'
+import TraceScatter from '../components/TraceScatter'
+import { serviceColor } from '../lib/serviceColor'
 
 const AUTO_REFRESH_MS = 5000
 
@@ -109,13 +112,31 @@ export default function TracesPage() {
     navigate(`/traces/${traceId}`, { state: { listSearch: location.search } })
 
   const firstLoad = loading && traces.length === 0
+  // Duration bars are relative to the slowest trace in the list.
+  const maxDuration = Math.max(1, ...traces.map((t) => t.duration_ms))
 
   return (
     <section className="page">
-      <h1>Traces</h1>
+      <div className="page-header">
+        <div>
+          <h1>Traces</h1>
+          <p className="muted">Every request across your services, newest first.</p>
+        </div>
+        <div className="page-actions">
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+            />
+            Auto-refresh
+          </label>
+          <button className="button" onClick={refresh}>Refresh</button>
+        </div>
+      </div>
 
-      <div className="filters">
-        <label>
+      <SidebarPanel title="Search traces">
+        <label className="field">
           Service
           <select
             value={filters.service ?? ''}
@@ -130,7 +151,7 @@ export default function TracesPage() {
           </select>
         </label>
 
-        <label>
+        <label className="field">
           Min duration (ms)
           <input
             type="number"
@@ -143,7 +164,7 @@ export default function TracesPage() {
           />
         </label>
 
-        <label className="checkbox">
+        <label className="toggle">
           <input
             type="checkbox"
             checked={filters.errorsOnly}
@@ -152,21 +173,12 @@ export default function TracesPage() {
           Errors only
         </label>
 
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={autoRefresh}
-            onChange={(e) => setAutoRefresh(e.target.checked)}
-          />
-          Auto-refresh
-        </label>
-        <button onClick={refresh}>Refresh</button>
         {hasFilters && (
           <button className="link-button" onClick={() => setSearchParams({}, { replace: true })}>
             Clear filters
           </button>
         )}
-      </div>
+      </SidebarPanel>
 
       {error ? (
         <ErrorState title="Could not load traces" message={error} onRetry={refresh} />
@@ -177,45 +189,70 @@ export default function TracesPage() {
           <EmptyState title="No traces match these filters">Try removing a filter.</EmptyState>
         ) : (
           <EmptyState title="No traces in the last hour">
-            Send some with <code>uv run demo/sdk_smoke.py</code>, then click Refresh.
+            Send some with <code>uv run demo/run_demo.py</code>, then click Refresh.
           </EmptyState>
         )
       ) : (
-        <div className={loading ? 'table-scroll is-refreshing' : 'table-scroll'}>
-          <table className="trace-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Service</th>
-                <th>Operation</th>
-                <th className="num">Duration</th>
-                <th className="num">Spans</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {traces.map((t) => (
-                <tr key={t.trace_id} onClick={() => openTrace(t.trace_id)}>
-                  <td>{formatTime(t.start_ms)}</td>
-                  <td>{t.root_service}</td>
-                  <td className="mono">
-                    <Link to={`/traces/${t.trace_id}`} state={{ listSearch: location.search }}>
-                      {t.root_name}
-                    </Link>
-                  </td>
-                  <td className="num">{formatDuration(t.duration_ms)}</td>
-                  <td className="num">{t.span_count}</td>
-                  <td>
-                    <span className={t.has_error ? 'badge badge-error' : 'badge badge-ok'}>
-                      {t.has_error ? 'error' : 'ok'}
-                      {t.http_status !== null && ` · ${t.http_status}`}
-                    </span>
-                  </td>
+        <>
+          <TraceScatter traces={traces} onOpen={openTrace} />
+          <p className="result-count muted">
+            {traces.length} {traces.length === 1 ? 'trace' : 'traces'}
+          </p>
+          <div className={loading ? 'card table-scroll is-refreshing' : 'card table-scroll'}>
+            <table className="trace-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Service</th>
+                  <th>Operation</th>
+                  <th className="num">Spans</th>
+                  <th className="num">Errors</th>
+                  <th className="duration-col">Duration</th>
+                  <th>Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {traces.map((t) => (
+                  <tr key={t.trace_id} onClick={() => openTrace(t.trace_id)}>
+                    <td className="mono muted">{formatTime(t.start_ms)}</td>
+                    <td>
+                      <span className="service-chip">
+                        <span className="service-dot" style={{ background: serviceColor(t.root_service) }} />
+                        {t.root_service}
+                      </span>
+                    </td>
+                    <td className="mono">
+                      <Link to={`/traces/${t.trace_id}`} state={{ listSearch: location.search }}>
+                        {t.root_name}
+                      </Link>
+                    </td>
+                    <td className="num mono">{t.span_count}</td>
+                    <td className="num mono">
+                      {t.error_count > 0 ? <span className="error-count">{t.error_count}</span> : '0'}
+                    </td>
+                    <td>
+                      <span className="duration-cell">
+                        <span className="duration-track">
+                          <span
+                            className={t.has_error ? 'duration-bar err' : 'duration-bar'}
+                            style={{ width: `${Math.max(2, (t.duration_ms / maxDuration) * 100)}%` }}
+                          />
+                        </span>
+                        <span className="mono">{formatDuration(t.duration_ms)}</span>
+                      </span>
+                    </td>
+                    <td>
+                      <span className={t.has_error ? 'badge badge-error' : 'badge badge-ok'}>
+                        {t.has_error ? 'Error' : 'OK'}
+                        {t.http_status !== null && ` · ${t.http_status}`}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </section>
   )
