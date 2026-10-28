@@ -16,6 +16,9 @@ from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsSer
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 from sse_starlette.sse import EventSourceResponse
 
+from heimdall.api.schemas import (
+    AnomalyReport, ErrorDetail, Health, LogList, ServiceList, ServiceMap, TraceDetail, TraceList,
+)
 from heimdall.ingest.broadcast import LogBroadcaster, TooManyViewers
 from heimdall.ingest.decoder import InvalidPayload, decode_logs, decode_traces
 from heimdall.ingest.pipeline import BatchWriter, QueueFull
@@ -122,12 +125,12 @@ async def ingest_logs(request: Request) -> Response:
 
 # --- Query API -------------------------------------------------------------
 
-@app.get("/api/health")
+@app.get("/api/health", response_model=Health)
 def health() -> dict:
     return {"status": "ok"}
 
 
-@app.get("/api/services")
+@app.get("/api/services", response_model=ServiceList)
 def services(
     from_ms: float | None = None,
     to_ms: float | None = None,
@@ -136,7 +139,7 @@ def services(
     return {"services": list_services(cur, from_ms=from_ms, to_ms=to_ms)}
 
 
-@app.get("/api/traces")
+@app.get("/api/traces", response_model=TraceList)
 def traces(
     service: str | None = None,
     errors_only: bool = False,
@@ -157,7 +160,7 @@ def traces(
     )}
 
 
-@app.get("/api/service-map")
+@app.get("/api/service-map", response_model=ServiceMap)
 def service_map_endpoint(
     from_ms: float | None = None,
     to_ms: float | None = None,
@@ -167,7 +170,7 @@ def service_map_endpoint(
     return service_map(cur, from_ms=from_ms, to_ms=to_ms)
 
 
-@app.get("/api/anomalies")
+@app.get("/api/anomalies", response_model=AnomalyReport)
 def anomalies(
     recent_minutes: float = Query(5, gt=0),
     baseline_minutes: float = Query(60, gt=0),
@@ -184,7 +187,8 @@ def anomalies(
     )
 
 
-@app.get("/api/traces/{trace_id}")
+@app.get("/api/traces/{trace_id}", response_model=TraceDetail,
+         responses={404: {"model": ErrorDetail, "description": "Trace not found"}})
 def trace(trace_id: str, cur: duckdb.DuckDBPyConnection = Depends(get_cursor)) -> dict:
     result = get_trace(cur, trace_id.lower())
     if result is None:
@@ -203,7 +207,8 @@ def _parse_tags(tag: list[str]) -> list[tuple[str, str]]:
     return tags
 
 
-@app.get("/api/logs")
+@app.get("/api/logs", response_model=LogList,
+         responses={400: {"model": ErrorDetail, "description": "Invalid regex, severity or tag"}})
 def logs(
     q: str | None = None,
     regex: bool = False,
