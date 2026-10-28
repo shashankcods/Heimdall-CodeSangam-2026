@@ -8,22 +8,29 @@
 # ///
 """Heimdall Ingestion Throughput & Backpressure Benchmark.
 
-Measures:
-1. Ingestion throughput (spans/second and requests/second).
+Measures, from the client side:
+1. Accepted throughput: spans/second answered with HTTP 200, i.e. QUEUED for writing.
 2. HTTP response latency percentiles (p50, p95, p99).
-3. Backpressure resilience: verifies HTTP 429 (Too Many Requests) when queue saturates.
+3. Backpressure: how many requests got HTTP 429 (Too Many Requests).
+
+A 200 means "queued", not "on disk". To measure how fast spans are actually
+written (and that none are lost), run the server via bench/writer_stats.py.
+
+Every batch carries unique trace/span IDs in 4-span trees (gateway -> order ->
+db, payment), like real SDK exports; reusing one payload would just resend the
+same spans, which Heimdall's read-time de-duplication then hides.
 
 Usage:
-    uv run bench/bench_ingest.py [--url http://localhost:4318/v1/traces] [--batches 200] [--concurrency 10]
+    uv run bench/bench_ingest.py [--url http://127.0.0.1:4318/v1/traces] [--batches 200] [--concurrency 10] [--gzip]
 """
 
 import argparse
 import asyncio
+import gzip
 import os
 import sys
 import time
 import uuid
-from pathlib import Path
 
 import httpx
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
@@ -34,48 +41,64 @@ from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, ScopeSpans, Sp
 PROTOBUF_CONTENT_TYPE = "application/x-protobuf"
 
 
+# One trace = 4 spans across 3 services: (service, name, parent index, offset ms, duration ms).
+TRACE_SHAPE = [
+    ("gateway", "POST /order", None, 0, 45),
+    ("order-service", "POST /orders", 0, 2, 40),
+    ("order-service", "INSERT orders", 1, 4, 9),
+    ("payment-service", "POST /charge", 1, 15, 25),
+]
+
+
+def _kv(key: str, value) -> KeyValue:
+    any_value = AnyValue(int_value=value) if isinstance(value, int) else AnyValue(string_value=value)
+    return KeyValue(key=key, value=any_value)
+
+
 def build_otlp_payload(spans_count: int = 100) -> bytes:
-    """Construct an authentic serialized ExportTraceServiceRequest protobuf payload."""
+    """One serialized ExportTraceServiceRequest with fresh IDs, grouped into 4-span traces."""
     request = ExportTraceServiceRequest()
-    resource = Resource(
-        attributes=[KeyValue(key="service.name", value=AnyValue(string_value="bench-service"))]
-    )
-    scope_spans = ScopeSpans()
+    by_service: dict[str, ScopeSpans] = {}
+    now = time.time_ns()
+    built = 0
+    while built < spans_count:
+        trace_id = uuid.uuid4().bytes
+        span_ids = [uuid.uuid4().bytes[:8] for _ in TRACE_SHAPE]
+        for i, (service, name, parent, offset_ms, dur_ms) in enumerate(TRACE_SHAPE):
+            if built == spans_count:
+                break
+            start = now + offset_ms * 1_000_000
+            span = OtlpSpan(
+                trace_id=trace_id,
+                span_id=span_ids[i],
+                parent_span_id=span_ids[parent] if parent is not None else b"",
+                name=name,
+                kind=OtlpSpan.SPAN_KIND_SERVER,
+                start_time_unix_nano=start,
+                end_time_unix_nano=start + dur_ms * 1_000_000,
+                status=Status(code=Status.STATUS_CODE_OK),
+                attributes=[_kv("http.route", name.split(" ")[-1]), _kv("http.response.status_code", 200)],
+            )
+            by_service.setdefault(service, ScopeSpans()).spans.append(span)
+            built += 1
 
-    trace_id_bytes = uuid.uuid4().bytes
-    for _ in range(spans_count):
-        span_id_bytes = uuid.uuid4().bytes[:8]
-        span = OtlpSpan(
-            trace_id=trace_id_bytes,
-            span_id=span_id_bytes,
-            name="POST /benchmark/operation",
-            kind=OtlpSpan.SPAN_KIND_SERVER,
-            start_time_unix_nano=time.time_ns(),
-            end_time_unix_nano=time.time_ns() + 25_000_000,
-            status=Status(code=Status.STATUS_CODE_OK),
-            attributes=[
-                KeyValue(key="http.route", value=AnyValue(string_value="/benchmark/operation")),
-                KeyValue(key="http.status_code", value=AnyValue(int_value=200)),
-            ],
-        )
-        scope_spans.spans.append(span)
-
-    request.resource_spans.append(
-        ResourceSpans(resource=resource, scope_spans=[scope_spans])
-    )
+    for service, scope_spans in by_service.items():
+        resource = Resource(attributes=[_kv("service.name", service)])
+        request.resource_spans.append(ResourceSpans(resource=resource, scope_spans=[scope_spans]))
     return request.SerializeToString()
 
 
 async def send_worker(
     client: httpx.AsyncClient,
     url: str,
-    payload: bytes,
+    payloads: list[bytes],
+    headers: dict[str, str],
     queue: asyncio.Queue,
     results: list,
 ):
     while not queue.empty():
         try:
-            _ = queue.get_nowait()
+            batch_index = queue.get_nowait()
         except asyncio.QueueEmpty:
             break
 
@@ -83,8 +106,8 @@ async def send_worker(
         try:
             resp = await client.post(
                 url,
-                content=payload,
-                headers={"Content-Type": PROTOBUF_CONTENT_TYPE},
+                content=payloads[batch_index],
+                headers=headers,
                 timeout=10.0,
             )
             elapsed_ms = (time.perf_counter() - start) * 1000.0
@@ -114,6 +137,7 @@ async def run_benchmark(
     total_batches: int,
     spans_per_batch: int,
     concurrency: int,
+    use_gzip: bool = False,
 ):
     print("=" * 65)
     print("        HEIMDALL INGESTION THROUGHPUT & LATENCY BENCHMARK")
@@ -122,12 +146,17 @@ async def run_benchmark(
     print(f"  Spans Per Batch:   {spans_per_batch:,} spans/batch")
     print(f"  Total Spans:       {total_batches * spans_per_batch:,} spans")
     print(f"  Concurrency:       {concurrency} workers")
+    print(f"  Compression:       {'gzip' if use_gzip else 'none'}")
     print("=" * 65)
 
-    # Pre-generate payload
-    print("\n[1/3] Building protobuf payload...")
-    payload = build_otlp_payload(spans_count=spans_per_batch)
-    print(f"      Payload size: {len(payload):,} bytes ({len(payload)/1024:.1f} KB)")
+    # Pre-generate every payload (unique IDs per batch) before the clock starts.
+    print(f"\n[1/3] Building {total_batches:,} protobuf payloads with unique IDs...")
+    payloads = [build_otlp_payload(spans_count=spans_per_batch) for _ in range(total_batches)]
+    headers = {"Content-Type": PROTOBUF_CONTENT_TYPE}
+    if use_gzip:
+        payloads = [gzip.compress(p) for p in payloads]
+        headers["Content-Encoding"] = "gzip"
+    print(f"      Payload size: {len(payloads[0]):,} bytes ({len(payloads[0])/1024:.1f} KB) each")
 
     # Prepare work queue
     work_queue = asyncio.Queue()
@@ -142,7 +171,7 @@ async def run_benchmark(
     limits = httpx.Limits(max_connections=concurrency * 2, max_keepalive_connections=concurrency)
     async with httpx.AsyncClient(limits=limits) as client:
         workers = [
-            asyncio.create_task(send_worker(client, target_url, payload, work_queue, results))
+            asyncio.create_task(send_worker(client, target_url, payloads, headers, work_queue, results))
             for _ in range(concurrency)
         ]
         await asyncio.gather(*workers)
@@ -183,7 +212,7 @@ async def run_benchmark(
         print(f"  Connection Failures:  {connection_errors:,}")
 
     print("-" * 65)
-    print(f"  Ingest Throughput:    {spans_per_sec:,.0f} spans/sec")
+    print(f"  Accepted Throughput:  {spans_per_sec:,.0f} spans/sec  (queued; see writer_stats.py for written)")
     print(f"  Request Throughput:   {reqs_per_sec:,.1f} reqs/sec")
     print("-" * 65)
     print("  Response Latency Distribution:")
@@ -199,12 +228,15 @@ def main():
     parser = argparse.ArgumentParser(description="Heimdall Ingestion Benchmark")
     parser.add_argument(
         "--url",
-        default=os.environ.get("HEIMDALL_URL", "http://localhost:4318") + "/v1/traces",
-        help="Target OTLP endpoint (default http://localhost:4318/v1/traces)",
+        # 127.0.0.1, not localhost: on Windows "localhost" tries IPv6 first and
+        # adds ~2 s per new connection, which would distort the latency numbers.
+        default=os.environ.get("HEIMDALL_URL", "http://127.0.0.1:4318") + "/v1/traces",
+        help="Target OTLP endpoint (default http://127.0.0.1:4318/v1/traces)",
     )
     parser.add_argument("--batches", type=int, default=100, help="Total batches to send (default 100)")
     parser.add_argument("--spans-per-batch", type=int, default=200, help="Spans per batch (default 200)")
     parser.add_argument("--concurrency", type=int, default=10, help="Concurrent workers (default 10)")
+    parser.add_argument("--gzip", action="store_true", help="Send gzip-compressed bodies, like OTel SDKs do")
     args = parser.parse_args()
 
     # Pre-check health
@@ -225,6 +257,7 @@ def main():
             total_batches=args.batches,
             spans_per_batch=args.spans_per_batch,
             concurrency=args.concurrency,
+            use_gzip=args.gzip,
         )
     )
 

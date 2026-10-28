@@ -15,13 +15,11 @@ Usage:
 
 import argparse
 import json
-import math
 import os
 import random
 import sys
 import time
 import uuid
-from datetime import datetime
 from pathlib import Path
 
 import duckdb
@@ -33,7 +31,6 @@ BACKEND_DIR = REPO_ROOT / "backend"
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from heimdall.ingest.models import LogRecord, Span
 from heimdall.store.schema import init_schema
 
 
@@ -254,10 +251,12 @@ def generate_benchmark_data(total_spans: int, db_path: str, batch_spans: int = 4
         "SELECT quantile_cont(duration_ns / 1000000.0, [0.5, 0.95, 0.99]) FROM spans"
     ).fetchone()[0]
 
-    db_size_mb = os.path.getsize(db_path) / (1024 * 1024)
-    bytes_per_span = (os.path.getsize(db_path) / max(total_in_db, 1))
-
+    # Move everything from the write-ahead log into the main file before measuring it.
+    conn.execute("CHECKPOINT")
     conn.close()
+    file_bytes = os.path.getsize(db_path)
+    db_size_mb = file_bytes / (1024 * 1024)
+    bytes_per_span = file_bytes / max(total_in_db, 1)
 
     print("\n" + "-" * 65)
     print("BENCHMARK SUMMARY:")
@@ -265,7 +264,8 @@ def generate_benchmark_data(total_spans: int, db_path: str, batch_spans: int = 4
     print(f"  Total Errors in DB:   {total_errors:,} ({(total_errors / max(total_in_db, 1))*100:.2f}%)")
     print(f"  Services:             {[s[0] for s in services]}")
     print(f"  Latency Percentiles:  p50={p50:.1f}ms | p95={p95:.1f}ms | p99={p99:.1f}ms")
-    print(f"  Database File Size:   {db_size_mb:.2f} MB ({bytes_per_span:.1f} bytes/span)")
+    print(f"  Database File Size:   {db_size_mb:.2f} MB ({bytes_per_span:.1f} bytes/span"
+          f"{', incl. logs' if logs_inserted else ''})")
     print(f"  Generation Time:      {total_time:.2f} s")
     print(f"  Average Throughput:   {avg_rate:,.0f} spans/sec")
     print("-" * 65)
