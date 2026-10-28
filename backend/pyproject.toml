@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "duckdb>=2.0.0",
     "fastapi>=0.159.1",
+    "mcp>=2.3.0",
     "opentelemetry-proto>=1.45.1",
     "protobuf>=7.36.2",
     "pyarrow>=26.0.0",

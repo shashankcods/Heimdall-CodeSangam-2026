@@ -1,9 +1,9 @@
-"""Heimdall HTTP app: OTLP ingest under /v1, query API under /api.
+"""Heimdall HTTP app: OTLP ingest under /v1, query API under /api, MCP at /mcp.
 
 Run:  uv run uvicorn heimdall.api.main:app --port 4318
 
 One process owns the DuckDB connection (DuckDB allows one read-write process per
-file); request handlers get their own cursor from it.
+file); request handlers and MCP tools get their own cursor from it.
 """
 
 import json
@@ -19,6 +19,7 @@ from sse_starlette.sse import EventSourceResponse
 from heimdall.ingest.broadcast import LogBroadcaster, TooManyViewers
 from heimdall.ingest.decoder import InvalidPayload, decode_logs, decode_traces
 from heimdall.ingest.pipeline import BatchWriter, QueueFull
+from heimdall.mcp_server import create_mcp_server
 from heimdall.queries.logs import InvalidSearch, LogFilter, log_to_api, search_logs
 from heimdall.queries.topology import service_map
 from heimdall.queries.traces import get_trace, list_services, list_traces
@@ -46,8 +47,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.span_writer = span_writer
     app.state.log_writer = log_writer
     app.state.log_broadcaster = log_broadcaster
+    # A fresh MCP server per app start: its HTTP session manager can only run once.
+    mcp_server = create_mcp_server(lambda: app.state.conn)
+    app.state.mcp_asgi = mcp_server.streamable_http_app(
+        streamable_http_path="/mcp", stateless_http=True, json_response=True,
+    )
     try:
-        yield
+        async with mcp_server.session_manager.run():
+            yield
     finally:
         # Flush what's still queued before exiting.
         await span_writer.close()
@@ -56,6 +63,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Heimdall", lifespan=lifespan)
+
+
+class _McpEndpoint:
+    """Forwards /mcp to the MCP server created for the current app lifespan."""
+
+    async def __call__(self, scope, receive, send) -> None:
+        await scope["app"].state.mcp_asgi(scope, receive, send)
+
+
+app.add_route("/mcp", _McpEndpoint(), methods=["GET", "POST", "DELETE"])
 
 
 def get_cursor(request: Request) -> Iterator[duckdb.DuckDBPyConnection]:
