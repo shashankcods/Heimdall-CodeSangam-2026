@@ -6,7 +6,7 @@ const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-proto'
 const { Resource } = require('@opentelemetry/resources');
 const { ATTR_SERVICE_NAME } = require('@opentelemetry/semantic-conventions');
 
-const HEIMDALL_URL = process.env.HEIMDALL_URL || 'http://localhost:4318';
+const HEIMDALL_URL = process.env.HEIMDALL_URL || 'http://127.0.0.1:4318';
 
 const traceExporter = new OTLPTraceExporter({
   url: `${HEIMDALL_URL}/v1/traces`,

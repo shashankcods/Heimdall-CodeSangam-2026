@@ -33,9 +33,11 @@ from demo.services.common import inject_trace_context, setup_service_telemetry
 
 SERVICE_NAME = "gateway"
 PORT = int(os.environ.get("GATEWAY_PORT", "8001"))
-ORDER_URL = os.environ.get("ORDER_URL", "http://localhost:8002")
+ORDER_URL = os.environ.get("ORDER_URL", "http://127.0.0.1:8002")
 
 tracer, log, tracer_provider, log_provider = setup_service_telemetry(SERVICE_NAME)
+
+http_client = httpx.Client(timeout=10.0)
 
 app = FastAPI(title="Gateway Service")
 
@@ -74,8 +76,7 @@ def create_order(payload: Optional[OrderPayload] = None):
     }
 
     try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.post(f"{ORDER_URL}/orders", json=order_req, headers=headers)
+        resp = http_client.post(f"{ORDER_URL}/orders", json=order_req, headers=headers)
     except Exception as exc:
         log.error("order service connection failed for %s: %s", order_id, str(exc))
         current_span = trace.get_current_span()

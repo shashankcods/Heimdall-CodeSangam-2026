@@ -16,7 +16,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
-HEIMDALL_URL = os.environ.get("HEIMDALL_URL", "http://localhost:4318")
+HEIMDALL_URL = os.environ.get("HEIMDALL_URL", "http://127.0.0.1:4318")
 
 
 def setup_service_telemetry(
