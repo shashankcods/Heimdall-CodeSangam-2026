@@ -22,14 +22,16 @@ import duckdb
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError  # message is shown to the AI caller
 
+from heimdall.queries.anomalies import find_anomalies as query_anomalies
 from heimdall.queries.logs import InvalidSearch, search_logs as query_logs
 from heimdall.queries.topology import service_map
 from heimdall.queries.traces import get_trace as query_trace, list_services as query_services, list_traces
 
 INSTRUCTIONS = """Heimdall stores OpenTelemetry traces and logs from a set of services.
-To investigate a problem: get_service_map shows which service-to-service calls are failing
-or slow; search_traces finds failing or slow requests; get_trace shows where inside one
-request the time or the error was; search_logs (filter by trace_id) shows why."""
+To investigate a problem: find_anomalies lists operations whose latency just spiked
+(especially during an error spike); get_service_map shows which service-to-service calls
+are failing or slow; search_traces finds failing or slow requests; get_trace shows where
+inside one request the time or the error was; search_logs (filter by trace_id) shows why."""
 
 MAX_TRACES = 50
 MAX_LOGS = 200
@@ -147,5 +149,22 @@ def create_mcp_server(get_conn: Callable[[], duckdb.DuckDBPyConnection]) -> MCPS
         handled. High error_rate edges are where to look first.
         """
         return with_cursor(lambda cur: service_map(cur, **_window(minutes)))
+
+    @server.tool()
+    def find_anomalies(recent_minutes: float = 5, baseline_minutes: float = 60) -> dict[str, Any]:
+        """Find operations whose p99 latency just spiked compared with their own recent history.
+
+        Compares the last `recent_minutes` with the `baseline_minutes` before that, per
+        service + span name. error_spike=true means errors jumped in the same window: those
+        are the strongest root-cause candidates and are listed first. Open example_trace_id
+        with get_trace to see the slow request.
+        """
+        result = with_cursor(lambda cur: query_anomalies(
+            cur, recent_minutes=recent_minutes, baseline_minutes=baseline_minutes,
+        ))
+        for window in ("recent_window", "baseline_window"):
+            w = result[window]
+            w["from"], w["to"] = _iso(w["from_ms"]), _iso(w["to_ms"])
+        return result
 
     return server

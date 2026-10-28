@@ -20,6 +20,7 @@ from heimdall.ingest.broadcast import LogBroadcaster, TooManyViewers
 from heimdall.ingest.decoder import InvalidPayload, decode_logs, decode_traces
 from heimdall.ingest.pipeline import BatchWriter, QueueFull
 from heimdall.mcp_server import create_mcp_server
+from heimdall.queries.anomalies import find_anomalies
 from heimdall.queries.logs import InvalidSearch, LogFilter, log_to_api, search_logs
 from heimdall.queries.topology import service_map
 from heimdall.queries.traces import get_trace, list_services, list_traces
@@ -164,6 +165,23 @@ def service_map_endpoint(
 ) -> dict:
     """Services (nodes) and who calls whom (edges) in the range; last hour by default."""
     return service_map(cur, from_ms=from_ms, to_ms=to_ms)
+
+
+@app.get("/api/anomalies")
+def anomalies(
+    recent_minutes: float = Query(5, gt=0),
+    baseline_minutes: float = Query(60, gt=0),
+    min_ratio: float = Query(2.0, ge=1),
+    min_increase_ms: float = Query(20, ge=0),
+    min_samples: int = Query(10, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    cur: duckdb.DuckDBPyConnection = Depends(get_cursor),
+) -> dict:
+    """Operations whose recent p99 latency spiked versus their baseline (error spikes first)."""
+    return find_anomalies(
+        cur, recent_minutes=recent_minutes, baseline_minutes=baseline_minutes, min_ratio=min_ratio,
+        min_increase_ms=min_increase_ms, min_samples=min_samples, limit=limit,
+    )
 
 
 @app.get("/api/traces/{trace_id}")
