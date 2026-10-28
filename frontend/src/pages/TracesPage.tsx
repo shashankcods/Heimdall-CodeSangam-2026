@@ -6,6 +6,8 @@ import { formatDuration, formatTime } from '../lib/format'
 import { usePageTitle } from '../lib/usePageTitle'
 import { EmptyState, ErrorState, LoadingState } from '../components/StatusMessage'
 
+const AUTO_REFRESH_MS = 5000
+
 // Filters live in the URL (/traces?service=x&errors=1&min_ms=40), so they survive
 // opening a trace and coming back, a page reload, or sharing the link.
 function filtersFromUrl(params: URLSearchParams): TraceFilters {
@@ -48,6 +50,7 @@ export default function TracesPage() {
   // Bumped by Refresh / Try again; listed below so the effect re-runs.
   const [refreshCount, setRefreshCount] = useState(0)
   const refresh = () => setRefreshCount((n) => n + 1)
+  const [autoRefresh, setAutoRefresh] = useState(true)
 
   // Service names for the dropdown: load once.
   useEffect(() => {
@@ -75,6 +78,31 @@ export default function TracesPage() {
       ignore = true
     }
   }, [filters, refreshCount])
+
+  // Auto-refresh: quietly re-fetch every few seconds so new requests show up on
+  // their own. No loading state, so the table doesn't fade on every tick.
+  useEffect(() => {
+    if (!autoRefresh) return
+    let ignore = false
+    const timer = setInterval(() => {
+      // Skip while the browser tab is hidden: nobody is looking.
+      if (document.visibilityState !== 'visible') return
+      fetchTraces(filters)
+        .then((result) => {
+          if (!ignore) {
+            setTraces(result)
+            setError(null)
+          }
+        })
+        .catch(() => {
+          // Keep showing the last list; the next tick (or Refresh) tries again.
+        })
+    }, AUTO_REFRESH_MS)
+    return () => {
+      ignore = true
+      clearInterval(timer)
+    }
+  }, [autoRefresh, filters])
 
   // Remember this list's URL so the trace page's "← All traces" comes back to it.
   const openTrace = (traceId: string) =>
@@ -124,6 +152,14 @@ export default function TracesPage() {
           Errors only
         </label>
 
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={autoRefresh}
+            onChange={(e) => setAutoRefresh(e.target.checked)}
+          />
+          Auto-refresh
+        </label>
         <button onClick={refresh}>Refresh</button>
         {hasFilters && (
           <button className="link-button" onClick={() => setSearchParams({}, { replace: true })}>
